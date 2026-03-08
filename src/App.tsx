@@ -281,7 +281,15 @@ const config = createConfig(
     chains: [base],
     walletConnectProjectId: '96933333333333333333333333333333', // Placeholder or real ID
     transports: {
-      [base.id]: http(),
+      [base.id]: http([
+        'https://mainnet.base.org',
+        'https://base.llamarpc.com',
+        'https://base-rpc.publicnode.com'
+      ], {
+        timeout: 30000,
+        retryCount: 3,
+        retryDelay: 1000
+      }),
     },
     // Explicitly set SSR to false as this is a client-side app
     ssr: false,
