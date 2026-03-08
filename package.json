@@ -9,8 +9,9 @@
     "start": "vite preview --host 0.0.0.0 --port $PORT",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
-  }
+    "lint": "tsc --noEmit",
+    "postinstall": "vite build"
+  },
   "dependencies": {
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
