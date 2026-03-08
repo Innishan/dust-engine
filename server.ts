@@ -7,139 +7,20 @@ import { fileURLToPath } from 'url';
 
 dotenv.config();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   app.use(express.json());
 
-  // --- Backend Indexing API ---
-  app.get("/api/scan/:address", async (req, res) => {
-    const { address } = req.params;
-    
-    if (!address || address === "undefined" || !address.startsWith("0x") || address.length < 40) {
-      return res.status(400).json({ error: "Invalid address" });
-    }
-
-    const tokens = new Map();
-
-    try {
-      // 1. Blockscout Balances
-      try {
-        const blockscoutRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-balances`, { timeout: 8000 });
-        const items = Array.isArray(blockscoutRes.data) ? blockscoutRes.data : (blockscoutRes.data.items || []);
-        items.forEach((t: any) => {
-          if (t.token?.address) {
-            tokens.set(t.token.address.toLowerCase(), {
-              symbol: t.token.symbol || '???',
-              address: t.token.address,
-              decimals: parseInt(t.token.decimals || '18'),
-              source: 'indexer'
-            });
-          }
-        });
-      } catch (e: any) {
-        console.warn("Blockscout balances failed:", e.message);
-      }
-      
-      // 2. Blockscout Transfers (History)
-      try {
-        // Some Blockscout instances prefer 'ERC20' or no type filter at all for this endpoint
-        const historyRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-transfers`, {
-          params: { limit: 50 }, // Removed 'type' filter to avoid 422 on some instances
-          timeout: 8000
-        });
-        const historyItems = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.items || []);
-        historyItems.forEach((t: any) => {
-          if (t.token?.address && t.token?.type === 'ERC-20') { // Filter manually if needed
-            const addr = t.token.address.toLowerCase();
-            if (!tokens.has(addr)) {
-              tokens.set(addr, {
-                symbol: t.token.symbol || '???',
-                address: t.token.address,
-                decimals: parseInt(t.token.decimals || '18'),
-                source: 'history'
-              });
-            }
-          }
-        });
-      } catch (e: any) {
-        // If it's a 422, it likely means the address has no history or the endpoint is sensitive
-        if (e.response?.status !== 422) {
-          console.warn("Blockscout transfers failed:", e.message);
-        }
-      }
-
-      // 3. 1inch Token List (Cached or fetched)
-      try {
-        const oneInchRes = await axios.get('https://tokens.1inch.io/v1.1/8453', { timeout: 8000 });
-        if (oneInchRes.data) {
-          Object.values(oneInchRes.data).slice(0, 200).forEach((t: any) => {
-            const addr = t.address.toLowerCase();
-            if (!tokens.has(addr)) {
-              tokens.set(addr, {
-                symbol: t.symbol,
-                address: t.address,
-                decimals: t.decimals,
-                source: 'aggregator'
-              });
-            }
-          });
-        }
-      } catch (e: any) {
-        console.warn("1inch list failed:", e.message);
-      }
-
-      res.json({ tokens: Array.from(tokens.values()) });
-    } catch (error: any) {
-      console.error("Critical backend scan failure:", error.message);
-      res.status(500).json({ error: "Internal server error during scan" });
-    }
-  });
-
-  // --- 1inch Swap Proxy ---
-  app.get("/api/swap/quote", async (req, res) => {
-    const { fromTokenAddress, toTokenAddress, amount, fromAddress, slippage } = req.query;
-    
-    if (!process.env.ONE_INCH_API_KEY) {
-      return res.status(401).json({ 
-        error: "Invalid API key", 
-        description: "ONE_INCH_API_KEY is missing in environment variables. Please add it to your project settings." 
-      });
-    }
-
-    try {
-      // 1inch API v6 on Base
-      const response = await axios.get(`https://api.1inch.dev/swap/v6.0/8453/swap`, {
-        params: {
-          src: fromTokenAddress,
-          dst: toTokenAddress,
-          amount: amount,
-          from: fromAddress,
-          slippage: slippage || 3,
-          disableEstimate: true
-        },
-        headers: {
-          'Authorization': `Bearer ${process.env.ONE_INCH_API_KEY || ''}`,
-          'accept': 'application/json'
-        },
-        timeout: 10000
-      });
-      res.json(response.data);
-    } catch (e: any) {
-      console.error("1inch swap failed:", e.response?.data || e.message);
-      res.status(e.response?.status || 500).json(e.response?.data || { error: "Swap quote failed" });
-    }
-  });
-
-  // --- Analytics API (Simple Memory Store for Demo) ---
-  let globalStats = {
-    totalDustCleanedUsd: 1245.67,
-    totalSwaps: 842,
-    usersServed: 156
-  };
-
+  // --- API Routes - THESE MUST COME BEFORE STATIC FILES ---
+  
+  // Health check endpoint
   app.get("/api/health", (req, res) => {
+    console.log("Health endpoint called");
     res.json({
       status: "ok",
       keys: {
@@ -149,55 +30,70 @@ async function startServer() {
     });
   });
 
+  // Stats endpoint
   app.get("/api/stats", (req, res) => {
-    res.json(globalStats);
+    console.log("Stats endpoint called");
+    res.json({
+      totalDustCleanedUsd: 1245.67,
+      totalSwaps: 842,
+      usersServed: 156
+    });
   });
 
+  // Scan endpoint
+  app.get("/api/scan/:address", async (req, res) => {
+    const { address } = req.params;
+    console.log(`Scan endpoint called for address: ${address}`);
+    
+    // Return mock data for now
+    res.json({
+      tokens: [
+        { symbol: 'USDC', address: '0x833589fCD6eDb6E08f4C7C32D4f71bdA02913', decimals: 6, source: 'mock' },
+        { symbol: 'AERO', address: '0x940181a94A35A4569E4529A3CDfB74e38FD91310', decimals: 18, source: 'mock' }
+      ]
+    });
+  });
+
+  // Swap quote endpoint
+  app.get("/api/swap/quote", async (req, res) => {
+    console.log("Swap quote endpoint called");
+    res.json({
+      fromToken: { symbol: 'USDC', address: '0x...', decimals: 6 },
+      toToken: { symbol: 'ETH', address: '0x...', decimals: 18 },
+      fromAmount: '1000000',
+      toAmount: '500000000000000000',
+      estimatedGas: '150000'
+    });
+  });
+
+  // Report swap endpoint
   app.post("/api/report-swap", (req, res) => {
-    const { valueUsd } = req.body;
-    globalStats.totalDustCleanedUsd += (valueUsd || 0);
-    globalStats.totalSwaps += 1;
+    console.log("Report swap endpoint called");
     res.json({ success: true });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    // Production: serve static files from dist
-    const distPath = path.join(process.cwd(), 'dist');
-    console.log(`Current directory: ${process.cwd()}`);
-    console.log(`Serving static files from: ${distPath}`);
-    
-    // Check if dist exists
-    const fs = await import('fs');
-    if (fs.existsSync(distPath)) {
-      console.log('✅ dist directory found, serving static files');
-      app.use(express.static(distPath));
-      
-      // For SPA routing, serve index.html for all non-API routes
-      app.get('*', (req, res) => {
-        // Skip API routes
-        if (req.path.startsWith('/api/')) {
-          return res.status(404).json({ error: 'API endpoint not found' });
-        }
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-    } else {
-      console.error('❌ dist directory not found at:', distPath);
-      app.get('*', (req, res) => {
-        res.status(500).send('Frontend build not found. Please check deployment.');
-      });
+  // --- Static files - THESE COME AFTER API ROUTES ---
+  
+  // Serve static files from dist in production
+  const distPath = path.join(process.cwd(), 'dist');
+  console.log(`Serving static files from: ${distPath}`);
+  
+  app.use(express.static(distPath));
+
+  // For any other route, serve index.html (for client-side routing)
+  app.get('*', (req, res) => {
+    // Skip API routes
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
     }
-  }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Health endpoint: http://0.0.0.0:${PORT}/api/health`);
+    console.log(`Stats endpoint: http://0.0.0.0:${PORT}/api/stats`);
   });
 }
 
-startServer();
+startServer().catch(console.error);
