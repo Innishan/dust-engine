@@ -1,66 +1,187 @@
 import express from "express";
+import axios from "axios";
+import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
-import dotenv from "dotenv";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+async function startServer() {
+  const app = express();
+  const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+  app.use(express.json());
 
-// ===== API ROUTES - MUST COME FIRST =====
-app.get("/api/health", (req, res) => {
-  console.log("✓ Health endpoint called");
-  res.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    keys: {
-      debank: !!process.env.DEBANK_API_KEY,
-      oneinch: !!process.env.ONE_INCH_API_KEY
-    }
+  // ===== API ROUTES =====
+  
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({
+      status: "ok",
+      keys: {
+        debank: !!process.env.DEBANK_API_KEY,
+        oneinch: !!process.env.ONE_INCH_API_KEY
+      }
+    });
   });
-});
 
-app.get("/api/stats", (req, res) => {
-  console.log("✓ Stats endpoint called");
-  res.json({
+  // Stats
+  let globalStats = {
     totalDustCleanedUsd: 1245.67,
     totalSwaps: 842,
     usersServed: 156
+  };
+
+  app.get("/api/stats", (req, res) => {
+    res.json(globalStats);
   });
-});
 
-// Test endpoint to verify API is working
-app.get("/api/test", (req, res) => {
-  res.json({ message: "API is working!" });
-});
+  app.post("/api/report-swap", (req, res) => {
+    const { valueUsd } = req.body;
+    globalStats.totalDustCleanedUsd += (valueUsd || 0);
+    globalStats.totalSwaps += 1;
+    globalStats.usersServed += 1;
+    res.json({ success: true });
+  });
 
-// ===== STATIC FILES =====
-const distPath = path.join(process.cwd(), 'dist');
-console.log("📁 Serving static files from:", distPath);
+  // Scan endpoint - YOUR ORIGINAL FUNCTION
+  app.get("/api/scan/:address", async (req, res) => {
+    const { address } = req.params;
+    
+    if (!address || address === "undefined" || !address.startsWith("0x") || address.length < 40) {
+      return res.status(400).json({ error: "Invalid address" });
+    }
 
-// Serve static files
-app.use(express.static(distPath));
+    const tokens = new Map();
 
-// ===== CATCH-ALL ROUTE - MUST COME LAST =====
-app.get('*', (req, res) => {
-  // Don't serve HTML for API routes
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: `API endpoint ${req.path} not found` });
-  }
-  // For everything else, serve the React app
-  res.sendFile(path.join(distPath, 'index.html'));
-});
+    try {
+      // 1. Blockscout Balances
+      try {
+        const blockscoutRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-balances`, { timeout: 8000 });
+        const items = Array.isArray(blockscoutRes.data) ? blockscoutRes.data : (blockscoutRes.data.items || []);
+        items.forEach((t: any) => {
+          if (t.token?.address) {
+            tokens.set(t.token.address.toLowerCase(), {
+              symbol: t.token.symbol || '???',
+              address: t.token.address,
+              decimals: parseInt(t.token.decimals || '18'),
+              source: 'indexer'
+            });
+          }
+        });
+      } catch (e: any) {
+        console.warn("Blockscout balances failed:", e.message);
+      }
+      
+      // 2. Blockscout Transfers
+      try {
+        const historyRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-transfers`, {
+          params: { limit: 50 },
+          timeout: 8000
+        });
+        const historyItems = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.items || []);
+        historyItems.forEach((t: any) => {
+          if (t.token?.address && t.token?.type === 'ERC-20') {
+            const addr = t.token.address.toLowerCase();
+            if (!tokens.has(addr)) {
+              tokens.set(addr, {
+                symbol: t.token.symbol || '???',
+                address: t.token.address,
+                decimals: parseInt(t.token.decimals || '18'),
+                source: 'history'
+              });
+            }
+          }
+        });
+      } catch (e: any) {
+        if (e.response?.status !== 422) {
+          console.warn("Blockscout transfers failed:", e.message);
+        }
+      }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Test API: http://0.0.0.0:${PORT}/api/test`);
-  console.log(`📍 Health API: http://0.0.0.0:${PORT}/api/health`);
-  console.log(`📍 Stats API: http://0.0.0.0:${PORT}/api/stats`);
-  console.log(`📱 Frontend: http://0.0.0.0:${PORT}`);
-});
+      // 3. 1inch Token List
+      try {
+        const oneInchRes = await axios.get('https://tokens.1inch.io/v1.1/8453', { timeout: 8000 });
+        if (oneInchRes.data) {
+          Object.values(oneInchRes.data).slice(0, 200).forEach((t: any) => {
+            const addr = t.address.toLowerCase();
+            if (!tokens.has(addr)) {
+              tokens.set(addr, {
+                symbol: t.symbol,
+                address: t.address,
+                decimals: t.decimals,
+                source: 'aggregator'
+              });
+            }
+          });
+        }
+      } catch (e: any) {
+        console.warn("1inch list failed:", e.message);
+      }
+
+      res.json({ tokens: Array.from(tokens.values()) });
+    } catch (error: any) {
+      console.error("Critical backend scan failure:", error.message);
+      res.status(500).json({ error: "Internal server error during scan" });
+    }
+  });
+
+  // 1inch Swap endpoint - YOUR ORIGINAL FUNCTION
+  app.get("/api/swap/quote", async (req, res) => {
+    const { fromTokenAddress, toTokenAddress, amount, fromAddress, slippage } = req.query;
+    
+    if (!process.env.ONE_INCH_API_KEY) {
+      return res.status(401).json({ 
+        error: "Invalid API key", 
+        description: "ONE_INCH_API_KEY is missing in environment variables" 
+      });
+    }
+
+    try {
+      const response = await axios.get(`https://api.1inch.dev/swap/v6.0/8453/swap`, {
+        params: {
+          src: fromTokenAddress,
+          dst: toTokenAddress,
+          amount: amount,
+          from: fromAddress,
+          slippage: slippage || 3,
+          disableEstimate: true
+        },
+        headers: {
+          'Authorization': `Bearer ${process.env.ONE_INCH_API_KEY || ''}`,
+          'accept': 'application/json'
+        },
+        timeout: 10000
+      });
+      res.json(response.data);
+    } catch (e: any) {
+      console.error("1inch swap failed:", e.response?.data || e.message);
+      res.status(e.response?.status || 500).json(e.response?.data || { error: "Swap quote failed" });
+    }
+  });
+
+  // ===== STATIC FILES =====
+  const distPath = path.join(process.cwd(), 'dist');
+  console.log(`Serving static files from: ${distPath}`);
+  app.use(express.static(distPath));
+
+  // Catch-all route - serve index.html for client-side routing
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: `API endpoint ${req.path} not found` });
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Health: http://0.0.0.0:${PORT}/api/health`);
+    console.log(`Stats: http://0.0.0.0:${PORT}/api/stats`);
+    console.log(`Scan: http://0.0.0.0:${PORT}/api/scan/0x...`);
+  });
+}
+
+startServer().catch(console.error);
