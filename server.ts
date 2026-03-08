@@ -2,6 +2,8 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import axios from "axios";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
@@ -166,10 +168,31 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile("dist/index.html", { root: "." });
-    });
+    // Production: serve static files from dist
+    const distPath = path.join(process.cwd(), 'dist');
+    console.log(`Current directory: ${process.cwd()}`);
+    console.log(`Serving static files from: ${distPath}`);
+    
+    // Check if dist exists
+    const fs = await import('fs');
+    if (fs.existsSync(distPath)) {
+      console.log('✅ dist directory found, serving static files');
+      app.use(express.static(distPath));
+      
+      // For SPA routing, serve index.html for all non-API routes
+      app.get('*', (req, res) => {
+        // Skip API routes
+        if (req.path.startsWith('/api/')) {
+          return res.status(404).json({ error: 'API endpoint not found' });
+        }
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      console.error('❌ dist directory not found at:', distPath);
+      app.get('*', (req, res) => {
+        res.status(500).send('Frontend build not found. Please check deployment.');
+      });
+    }
   }
 
   app.listen(PORT, "0.0.0.0", () => {
