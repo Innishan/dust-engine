@@ -1,43 +1,28 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [
-    react(),
-    nodePolyfills({
-      // Whether to polyfill specific globals
-      globals: {
-        Buffer: true,
-        global: true,
-        process: true,
-      },
-      // Whether to polyfill node: protocol imports
-      protocolImports: true,
-    }),
-  ],
-  define: {
-    'process.env': {},
-    global: 'globalThis',
+  plugins: [react()],
+  server: {
+    host: true,
+    port: 3000,
+    strictPort: true,
   },
-  optimizeDeps: {
-    esbuildOptions: {
-      // Node.js global to browser globalThis
-      define: {
-        global: 'globalThis'
-      },
-      // Enable esbuild polyfill plugins
-      plugins: [],
-    },
+  preview: {
+    host: true,
+    port: 3000,
+    strictPort: true,
+    allowedHosts: [
+      'dust-engine.onrender.com',
+      '.onrender.com',  // Allows all render subdomains
+      'localhost',
+      '.dustengine.xyz'  // For when you connect your custom domain
+    ]
   },
-  resolve: {
-    alias: {
-      // Add aliases for node.js built-ins
-      events: 'events',
-      buffer: 'buffer',
-      util: 'util',
-      stream: 'stream-browserify',
-    },
-  },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    emptyOutDir: true,
+  }
 })
