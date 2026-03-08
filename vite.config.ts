@@ -1,24 +1,43 @@
-import tailwindcss from '@tailwindcss/vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
-export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, '.', '');
-  return {
-    plugins: [react(), tailwindcss()],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-    },
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [
+    react(),
+    nodePolyfills({
+      // Whether to polyfill specific globals
+      globals: {
+        Buffer: true,
+        global: true,
+        process: true,
       },
+      // Whether to polyfill node: protocol imports
+      protocolImports: true,
+    }),
+  ],
+  define: {
+    'process.env': {},
+    global: 'globalThis',
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      // Node.js global to browser globalThis
+      define: {
+        global: 'globalThis'
+      },
+      // Enable esbuild polyfill plugins
+      plugins: [],
     },
-    server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
+  },
+  resolve: {
+    alias: {
+      // Add aliases for node.js built-ins
+      events: 'events',
+      buffer: 'buffer',
+      util: 'util',
+      stream: 'stream-browserify',
     },
-  };
-});
+  },
+})
