@@ -1,99 +1,66 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
-import axios from "axios";
-import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
+import dotenv from "dotenv";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function startServer() {
-  const app = express();
-  const PORT = process.env.PORT || 3000;
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-  app.use(express.json());
+app.use(express.json());
 
-  // --- API Routes - THESE MUST COME BEFORE STATIC FILES ---
-  
-  // Health check endpoint
-  app.get("/api/health", (req, res) => {
-    console.log("Health endpoint called");
-    res.json({
-      status: "ok",
-      keys: {
-        debank: !!process.env.DEBANK_API_KEY,
-        oneinch: !!process.env.ONE_INCH_API_KEY
-      }
-    });
-  });
-
-  // Stats endpoint
-  app.get("/api/stats", (req, res) => {
-    console.log("Stats endpoint called");
-    res.json({
-      totalDustCleanedUsd: 1245.67,
-      totalSwaps: 842,
-      usersServed: 156
-    });
-  });
-
-  // Scan endpoint
-  app.get("/api/scan/:address", async (req, res) => {
-    const { address } = req.params;
-    console.log(`Scan endpoint called for address: ${address}`);
-    
-    // Return mock data for now
-    res.json({
-      tokens: [
-        { symbol: 'USDC', address: '0x833589fCD6eDb6E08f4C7C32D4f71bdA02913', decimals: 6, source: 'mock' },
-        { symbol: 'AERO', address: '0x940181a94A35A4569E4529A3CDfB74e38FD91310', decimals: 18, source: 'mock' }
-      ]
-    });
-  });
-
-  // Swap quote endpoint
-  app.get("/api/swap/quote", async (req, res) => {
-    console.log("Swap quote endpoint called");
-    res.json({
-      fromToken: { symbol: 'USDC', address: '0x...', decimals: 6 },
-      toToken: { symbol: 'ETH', address: '0x...', decimals: 18 },
-      fromAmount: '1000000',
-      toAmount: '500000000000000000',
-      estimatedGas: '150000'
-    });
-  });
-
-  // Report swap endpoint
-  app.post("/api/report-swap", (req, res) => {
-    console.log("Report swap endpoint called");
-    res.json({ success: true });
-  });
-
-  // --- Static files - THESE COME AFTER API ROUTES ---
-  
-  // Serve static files from dist in production
-  const distPath = path.join(process.cwd(), 'dist');
-  console.log(`Serving static files from: ${distPath}`);
-  
-  app.use(express.static(distPath));
-
-  // For any other route, serve index.html (for client-side routing)
-  app.get('*', (req, res) => {
-    // Skip API routes
-    if (req.path.startsWith('/api/')) {
-      return res.status(404).json({ error: 'API endpoint not found' });
+// ===== API ROUTES - MUST COME FIRST =====
+app.get("/api/health", (req, res) => {
+  console.log("✓ Health endpoint called");
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    keys: {
+      debank: !!process.env.DEBANK_API_KEY,
+      oneinch: !!process.env.ONE_INCH_API_KEY
     }
-    res.sendFile(path.join(distPath, 'index.html'));
   });
+});
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Health endpoint: http://0.0.0.0:${PORT}/api/health`);
-    console.log(`Stats endpoint: http://0.0.0.0:${PORT}/api/stats`);
+app.get("/api/stats", (req, res) => {
+  console.log("✓ Stats endpoint called");
+  res.json({
+    totalDustCleanedUsd: 1245.67,
+    totalSwaps: 842,
+    usersServed: 156
   });
-}
+});
 
-startServer().catch(console.error);
+// Test endpoint to verify API is working
+app.get("/api/test", (req, res) => {
+  res.json({ message: "API is working!" });
+});
+
+// ===== STATIC FILES =====
+const distPath = path.join(process.cwd(), 'dist');
+console.log("📁 Serving static files from:", distPath);
+
+// Serve static files
+app.use(express.static(distPath));
+
+// ===== CATCH-ALL ROUTE - MUST COME LAST =====
+app.get('*', (req, res) => {
+  // Don't serve HTML for API routes
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: `API endpoint ${req.path} not found` });
+  }
+  // For everything else, serve the React app
+  res.sendFile(path.join(distPath, 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📍 Test API: http://0.0.0.0:${PORT}/api/test`);
+  console.log(`📍 Health API: http://0.0.0.0:${PORT}/api/health`);
+  console.log(`📍 Stats API: http://0.0.0.0:${PORT}/api/stats`);
+  console.log(`📱 Frontend: http://0.0.0.0:${PORT}`);
+});
