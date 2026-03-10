@@ -163,6 +163,58 @@ async function startServer() {
     }
   });
 
+  // Proxy for merkle.io to avoid CORS
+  app.post('/api/proxy/merkle', async (req, res) => {
+    try {
+      console.log('Proxying request to merkle.io');
+      const response = await axios.post('https://eth.merkle.io/', req.body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': 'https://dust-engine.onrender.com',
+          'User-Agent': 'DustEngine/1.0'
+        },
+        timeout: 10000
+      });
+      res.json(response.data);
+    } catch (error: any) {
+      console.error('Merkle proxy error:', error.message);
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', error.response.data);
+      }
+      res.status(error.response?.status || 500).json({ 
+        error: 'Proxy request failed',
+        details: error.message 
+      });
+    }
+  });
+
+  // Proxy for hey.xyz ENS resolution
+  app.get('/api/proxy/ens/:address', async (req, res) => {
+    try {
+      const { address } = req.params;
+      console.log(`Proxying ENS request for address: ${address}`);
+      const response = await axios.get(`https://api.hey.xyz/ens/ccip/${address}`, {
+        headers: {
+          'Origin': 'https://dust-engine.onrender.com',
+          'User-Agent': 'DustEngine/1.0'
+        },
+        timeout: 10000
+      });
+      res.json(response.data);
+    } catch (error: any) {
+      console.error('ENS proxy error:', error.message);
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', error.response.data);
+      }
+      res.status(error.response?.status || 500).json({ 
+        error: 'ENS resolution failed',
+        details: error.message 
+      });
+    }
+  });
+
   // ===== STATIC FILES =====
   const distPath = path.join(process.cwd(), 'dist');
   console.log(`Serving static files from: ${distPath}`);
