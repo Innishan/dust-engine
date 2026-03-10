@@ -216,7 +216,7 @@ async function startServer() {
   });
 
   // ===== STATIC FILES =====
-  const distPath = path.join(process.cwd(), 'dist');
+  const distPath = path.join(__dirname, "dist");
   console.log(`Serving static files from: ${distPath}`);
   app.use(express.static(distPath));
 
