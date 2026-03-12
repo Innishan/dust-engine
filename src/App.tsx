@@ -484,19 +484,10 @@ function EngineCore() {
         }
       } catch (e) { console.warn("Indexer scan failed", e); }
 
-      // 1.3 1inch Verified Token List (Discovery)
+      // 1.3 1inch discovery disabled
+      // 1inch returns ALL Base tokens which breaks dust detection
       let oneInchTokens: any[] = [];
-      try {
-        const listRes = await axios.get('https://tokens.1inch.io/v1.1/8453', { timeout: 10000 });
-        if (listRes.data) {
-          oneInchTokens = Object.values(listRes.data).map((t: any) => ({
-            symbol: t.symbol,
-            address: t.address as Address,
-            decimals: t.decimals
-          }));
-          addLog(`1INCH: LOADED ${oneInchTokens.length} VERIFIED ASSETS`);
-        }
-      } catch (e) { console.warn("1inch list failed", e); }
+      addLog("1INCH DISCOVERY DISABLED (USING WALLET TOKENS ONLY)");
 
       // 1.4 Deep Scan (DexScreener Search for any missing assets)
       addLog("DEEP SCAN: CHECKING DEX LIQUIDITY...");
