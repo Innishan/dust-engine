@@ -33,7 +33,7 @@ import {
   Search,
   Twitter
 } from 'lucide-react';
-import { formatUnits, parseUnits, type Address, getContract, encodeFunctionData } from 'viem';
+import { formatUnits, createPublicClient, http } from 'viem'
 import axios from 'axios';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -379,6 +379,12 @@ function EngineCore() {
   const { address, isConnected } = useAccount();
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
+
+  // fallback RPC client for Base when wallet is not connected
+  const baseRpcClient = createPublicClient({
+    chain: base,
+    transport: http("https://mainnet.base.org")
+  });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [tokens, setTokens] = useState<TokenInfo[]>([]);
@@ -551,7 +557,9 @@ function EngineCore() {
         let retries = 0;
         while (!success && retries < 2) {
           try {
-            const results = await (publicClient as any).multicall({
+            const client = publicClient || baseRpcClient;
+
+            const results = await (client as any).multicall({
               contracts: chunk.map(t => ({
                 address: t.address,
                 abi: ERC20_ABI,
