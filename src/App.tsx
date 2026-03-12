@@ -520,21 +520,16 @@ function EngineCore() {
         }
       } catch (e) { console.warn("Deep scan failed", e); }
 
-      // --- Phase 2: Deduplication & Final Scan List ---
-      const finalScanList = [...COMMON_BASE_TOKENS];
-      const finalSeen = new Set(finalScanList.map(t => t.address?.toLowerCase()).filter(Boolean));
-      
-      // Add discovered tokens
-      discoveredTokens.forEach(t => {
-        if (t.address && !finalSeen.has(t.address.toLowerCase())) {
-          finalScanList.push({
-            symbol: t.symbol || '???',
-            address: t.address as Address,
-            decimals: t.decimals || 18
-          });
-          finalSeen.add(t.address.toLowerCase());
-        }
-      });
+      // --- Phase 2: Final Scan List (only tokens actually held by wallet) ---
+      const finalScanList = discoveredTokens
+        .filter(t => t.address)
+        .map(t => ({
+          symbol: t.symbol || '???',
+          address: t.address as Address,
+          decimals: t.decimals || 18
+      }));
+
+      addLog(`INDEXER PROVIDED ${finalScanList.length} TOKENS TO VERIFY`);
 
       // Add 1inch tokens (Very aggressive discovery)
       oneInchTokens.forEach(t => {
