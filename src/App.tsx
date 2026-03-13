@@ -842,7 +842,7 @@ function EngineCore() {
             </div>
             <p className="text-zinc-400 font-bold uppercase tracking-widest mb-2">No Dust Detected</p>
             <p className="text-zinc-600 text-xs max-w-xs mx-auto italic mb-6">
-              The engine scanned {COMMON_BASE_TOKENS.length} common Base tokens but found no balances under $1.
+              The engine scanned {tokens.length} tokens but found no balances under $1.
             </p>
             <button 
               onClick={analyze}
