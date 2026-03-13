@@ -520,14 +520,16 @@ function EngineCore() {
         }
       } catch (e) { console.warn("Deep scan failed", e); }
 
-      // --- Phase 2: Final Scan List (only tokens actually held by wallet) ---
       const finalScanList = discoveredTokens
-        .filter(t => t.address)
+        .filter(t => 
+          t.address &&
+          t.address.toLowerCase() !== "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        )
         .map(t => ({
           symbol: t.symbol || '???',
           address: t.address as Address,
           decimals: t.decimals || 18
-      }));
+        }));
 
       addLog(`INDEXER PROVIDED ${finalScanList.length} TOKENS TO VERIFY`);
 
