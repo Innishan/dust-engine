@@ -262,15 +262,18 @@ function EngineCore() {
       // 1.2 Direct Blockscout Indexer Scan (Supplement)
       try {
         const bsRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${addressToScan}/token-balances`, { timeout: 10000 });
-        const bsItems = Array.isArray(bsRes.data) ? bsRes.data : (bsRes.data.items || []);
+        const bsItems = bsRes.data?.items || [];
         if (bsItems.length > 0) {
-          const bsTokens = bsItems.map((t: any) => ({
-            symbol: t.token?.symbol || '???',
-            address: t.token?.address as Address,
-            decimals: parseInt(t.token?.decimals || '18'),
-            priceUsd: parseFloat(t.token?.exchange_rate || '0')
-          }));
+          const bsTokens = bsItems
+            .filter((t: any) => t.token?.address)
+            .map((t: any) => ({
+              symbol: t.token.symbol || '???',
+              address: t.token.address as Address,
+              decimals: parseInt(t.token.decimals || '18'),
+              priceUsd: parseFloat(t.token.exchange_rate || '0')
+            }));
           discoveredTokens = [...discoveredTokens, ...bsTokens];
+          addLog(`BLOCKSCOUT FOUND: ${bsTokens.length} TOKENS`);
           addLog(`INDEXER: DISCOVERED ${bsTokens.length} ASSETS`);
         }
       } catch (e) { console.warn("Indexer scan failed", e); }
