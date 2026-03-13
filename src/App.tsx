@@ -265,10 +265,10 @@ function EngineCore() {
         const bsItems = bsRes.data?.items || [];
         if (bsItems.length > 0) {
           const bsTokens = bsItems
-            .filter((t: any) => t.token?.address)
+            .filter((t: any) => t.token?.address_hash)
             .map((t: any) => ({
               symbol: t.token.symbol || '???',
-              address: t.token.address as Address,
+              address: t.token.address_hash as Address,
               decimals: parseInt(t.token.decimals || '18'),
               priceUsd: parseFloat(t.token.exchange_rate || '0')
             }));
