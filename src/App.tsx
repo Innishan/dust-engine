@@ -33,8 +33,9 @@ import {
   Search,
   Twitter
 } from 'lucide-react';
-import { formatUnits, createPublicClient, http } from 'viem'
+import { formatUnits, createPublicClient, type Address } from 'viem'
 import axios from 'axios';
+import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -48,8 +49,12 @@ const ONE_INCH_ROUTER = '0x111111125421caae10460d09cc2b79471d860ac9' as Address;
 const PROTOCOL_FEE_RECIPIENT = '0xEe36C3c644240302eB8121F66D4e23C068512a40' as Address; // Fee collector
 const WETH = '0x4200000000000000000000000000000000000006' as Address;
 
-// Curated list of popular Base tokens
-const COMMON_BASE_TOKENS: any[] = [];
+const COMMON_BASE_TOKENS = [
+  { symbol: 'USDC', address: '0x833589fCD6eDb6E08f4C7C32D4f71b54bDA02913' as Address, decimals: 6 },
+  { symbol: 'USDT', address: '0xfde4C96c8593536E31F229EA8f37b2AD3d69d441' as Address, decimals: 6 },
+  { symbol: 'DAI', address: '0x50c5725949A6F0C72E6C45641830677285586337' as Address, decimals: 18 },
+  { symbol: 'WETH', address: '0x4200000000000000000000000000000000000006' as Address, decimals: 18 }
+];
 
 const ERC20_ABI = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
@@ -64,21 +69,11 @@ const config = createConfig(
   getDefaultConfig({
     appName: 'Dust Cleaning Engine',
     chains: [base],
-    walletConnectProjectId: '96933333333333333333333333333333', // Placeholder or real ID
+    walletConnectProjectId: 'd6cceeb0d16f4b0724853476122511d7',
     transports: {
-      [base.id]: http([
-        'https://mainnet.base.org',
-        'https://base.llamarpc.com',
-        'https://base-rpc.publicnode.com'
-      ], {
-        timeout: 30000,
-        retryCount: 3,
-        retryDelay: 1000
-      }),
+      [base.id]: http('https://mainnet.base.org')
     },
-    // Explicitly set SSR to false as this is a client-side app
     ssr: false,
-    // Limit connectors to avoid iframe-related wallet extension errors
     connectors: [
       injected(),
       coinbaseWallet({ appName: 'Dust Cleaning Engine' }),
@@ -161,6 +156,7 @@ function ConnectButton() {
 }
 
 function EngineCore() {
+  const { writeContractAsync } = useWriteContract();
   const { address, isConnected } = useAccount();
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
@@ -216,6 +212,9 @@ function EngineCore() {
 
   const analyze = async (targetAddress?: string) => {
     const addressToScan = targetAddress || address;
+    
+    const liquidityMap: Record<string, number> = {};
+    
     if (!addressToScan) {
       addLog("ERROR: NO ADDRESS TO SCAN");
       return;
@@ -249,9 +248,26 @@ function EngineCore() {
       
       // 1.1 Backend Deep Scan
       try {
-        const backendRes = await axios.get(`/api/scan/${addressToScan}`, { timeout: 15000 });
+        const targetAddress = addressToScan || address;
+
+        console.log("SCAN ADDRESS:", targetAddress);
+
+        const backendRes = await axios.get(
+          `http://localhost:4000/api/scan/${targetAddress}`,
+          { timeout: 30000 }
+        );
+
+        console.log("BACKEND RAW RESPONSE:", backendRes.data);
+        console.log("TOKEN COUNT:", backendRes.data?.tokens?.length);
+
         if (backendRes.data?.tokens) {
-          discoveredTokens = [...discoveredTokens, ...backendRes.data.tokens];
+          discoveredTokens = [
+            ...discoveredTokens,
+            ...backendRes.data.tokens.map((t: any) => ({
+              ...t,
+              balance: t.balance || "0"
+            }))
+          ];
           addLog(`BACKEND: DISCOVERED ${backendRes.data.tokens.length} ASSETS`);
         }
       } catch (e: any) { 
@@ -275,6 +291,7 @@ function EngineCore() {
           discoveredTokens = [...discoveredTokens, ...bsTokens];
           addLog(`BLOCKSCOUT FOUND: ${bsTokens.length} TOKENS`);
           addLog(`INDEXER: DISCOVERED ${bsTokens.length} ASSETS`);
+          console.log("BLOCKSCOUT TOKENS:", bsTokens);
         }
       } catch (e) { console.warn("Indexer scan failed", e); }
 
@@ -284,17 +301,26 @@ function EngineCore() {
       addLog("1INCH DISCOVERY DISABLED (USING WALLET TOKENS ONLY)");
 
       // 1.4 Deep Scan (DexScreener Search for any missing assets)
-      addLog("DEEP SCAN: CHECKING DEX LIQUIDITY...");
+      // addLog("DEEP SCAN: CHECKING DEX LIQUIDITY...");
+      
+      // ❌ TEMP DISABLED (too slow)
+      /*
       try {
         // Find tokens that have balances but might not be in our lists
         const potentialAddresses = discoveredTokens.map(t => t.address).filter(Boolean);
+        
         if (potentialAddresses.length > 0) {
           const dsRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${potentialAddresses.slice(0, 30).join(',')}`, { timeout: 8000 });
+          
           if (dsRes.data?.pairs) {
             dsRes.data.pairs.forEach((pair: any) => {
               if (pair.baseToken?.address && pair.chainId === 'base') {
                 const addr = pair.baseToken.address as Address;
-                if (!discoveredTokens.some(dt => dt.address?.toLowerCase() === addr.toLowerCase())) {
+                const addrLower = addr.toLowerCase();
+
+                liquidityMap[addrLower] = pair.liquidity?.usd || 0;
+
+                if (!discoveredTokens.some(dt => dt.address?.toLowerCase() === addrLower)) {
                   discoveredTokens.push({
                     symbol: pair.baseToken.symbol || '???',
                     address: addr,
@@ -307,19 +333,43 @@ function EngineCore() {
           }
         }
       } catch (e) { console.warn("Deep scan failed", e); }
+      */
+      console.log("Liquidity Map:", liquidityMap);
+
+      const finalSeen = new Set<string>();
 
       const finalScanList = discoveredTokens
-        .filter(t => 
-          t.address &&
-          t.address.toLowerCase() !== "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        )
-        .map(t => ({
-          symbol: t.symbol || '???',
-          address: t.address as Address,
-          decimals: t.decimals || 18
-        }));
+        .filter(t => {
+          if (!t.address) return false;
 
-      addLog(`INDEXER PROVIDED ${finalScanList.length} TOKENS TO VERIFY`);
+          const addrLower = t.address.toLowerCase();
+
+          if (addrLower === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") return false;
+
+          // 🔥 LIQUIDITY CHECK
+          const liquidity = liquidityMap[addrLower] || 0;
+
+          // 🔥 DEBUG LOG (ADD HERE)
+          // console.log("FILTER CHECK:", {
+          //  symbol: t.symbol,
+          //  address: addrLower,
+          //  liquidity
+          // });
+          
+          // keep all tokens (we filter later based on value)
+          return true;
+        })
+        .map(t => {
+          finalSeen.add(t.address.toLowerCase());
+          return {
+            symbol: t.symbol || '???',
+            address: t.address as Address,
+            decimals: t.decimals ?? 18 // don't override if exists
+          };
+        });
+
+      addLog(`INDEXER PROVIDED TOKENS`);
+      console.time("⏱️ TOTAL SCAN");
 
       // Add 1inch tokens (Very aggressive discovery)
       oneInchTokens.forEach(t => {
@@ -331,11 +381,14 @@ function EngineCore() {
 
       addLog(`VERIFYING ${finalScanList.length} ASSETS ON-CHAIN...`);
       
+      // ✅ FAST MODE: skip 1inch validation
+      const validTokens = finalScanList;
+
       // 2. Multicall balances with retry logic
       const chunkSize = 100;
       const allBalances: bigint[] = [];
-      for (let i = 0; i < finalScanList.length; i += chunkSize) {
-        const chunk = finalScanList.slice(i, i + chunkSize);
+      for (let i = 0; i < validTokens.length; i += chunkSize) {
+        const chunk = validTokens.slice(i, i + chunkSize);
         addLog(`SCANNING CHUNK ${Math.floor(i/chunkSize) + 1}/${Math.ceil(finalScanList.length/chunkSize)}...`);
         
         let success = false;
@@ -370,10 +423,38 @@ function EngineCore() {
       }
 
       // 3. Filter tokens with balance
-      const tokensWithBalance = finalScanList.filter((_, i) => allBalances[i] > 0n);
-      const balancesForTokens = allBalances.filter(b => b > 0n);
+      console.time("⏱️ BALANCE FETCH");
+      const tokensWithBalance: typeof validTokens = [];
+      const balancesForTokens: bigint[] = [];
+
+      validTokens.forEach((t, i) => {
+        if (allBalances[i] && allBalances[i] > 0n) {
+          tokensWithBalance.push(t);
+          balancesForTokens.push(allBalances[i]);
+        }
+      });
       
       addLog(`BALANCES DETECTED: ${tokensWithBalance.length} ASSETS`);
+
+      // ✅ FIX: convert balances properly using decimals
+      const normalizedBalances = tokensWithBalance.map((token, i) => {
+        const raw = balancesForTokens[i];
+        const decimals = token.decimals ?? 18;
+
+        const balance = Number(raw) / Math.pow(10, decimals);
+
+        return {
+          ...token,
+          balance
+        };
+      });
+
+      console.log("✅ NORMALIZED:", normalizedBalances.slice(0, 5));      
+
+      console.timeEnd("⏱️ BALANCE FETCH");
+
+      console.log("🧪 TOKENS WITH BALANCE:", tokensWithBalance.map(t => t.symbol));
+      console.log("🧪 BALANCES:", balancesForTokens.map(b => b.toString()));
       
       if (tokensWithBalance.length === 0) {
         addLog("NO BALANCES DETECTED");
@@ -382,8 +463,11 @@ function EngineCore() {
       }
 
       // --- Phase 3: Price Fetching & Verification ---
+      console.time("⏱️ PRICE FETCH");
       addLog(`FETCHING PRICES FOR ${tokensWithBalance.length} ASSETS...`);
-      const priceAddresses = tokensWithBalance.map(t => t.address?.toLowerCase()).filter(Boolean);
+      const priceAddresses = tokensWithBalance
+        .map(t => t.address.toLowerCase())
+        .filter(addr => addr.startsWith("0x") && addr.length === 42);
       let prices: Record<string, number> = {};
       
       // 3.1 Use prices from indexer first
@@ -391,20 +475,81 @@ function EngineCore() {
         if (t.address && t.priceUsd > 0) prices[t.address.toLowerCase()] = t.priceUsd;
       });
 
-      // 3.2 CoinGecko (Chunked to prevent URI too long or 422)
+      // DEBUG HERE
+      console.log("🧪 PRICE TOKENS COUNT:", priceAddresses.length);
+      console.log("🧪 SAMPLE ADDRESSES:", priceAddresses.slice(0, 5));
+
+      // 3.2 CoinGecko (Robust + Fallback)
       try {
-        const chunkSize = 50;
+        const chunkSize = 20;
+
         for (let i = 0; i < priceAddresses.length; i += chunkSize) {
           const chunk = priceAddresses.slice(i, i + chunkSize);
-          const cgRes = await axios.get(`https://api.coingecko.com/api/v3/simple/token_price/base?contract_addresses=${chunk.join(',')}&vs_currencies=usd`, {
-            timeout: 8000
-          });
-          Object.entries(cgRes.data).forEach(([addr, val]: [string, any]) => {
-            if (val.usd) prices[addr.toLowerCase()] = val.usd;
-          });
-          if (priceAddresses.length > chunkSize) await new Promise(r => setTimeout(r, 200)); // Rate limit buffer
+
+          console.log("📦 CG CHUNK:", chunk.length);
+
+          try {
+            // 🔥 Try batch first
+            const cgRes = await axios.get(
+              `https://api.coingecko.com/api/v3/simple/token_price/base`,
+              {
+                params: {
+                  contract_addresses: chunk.join(','),
+                  vs_currencies: "usd"
+                },
+                timeout: 8000
+              }
+            );
+
+            Object.entries(cgRes.data).forEach(([addr, val]: [string, any]) => {
+              if (val?.usd) {
+                prices[addr.toLowerCase()] = val.usd;
+              }
+            });
+
+            console.log("✅ CG BATCH SUCCESS");
+
+          } catch (batchErr) {
+            console.warn("⚠️ CG BATCH FAILED → fallback to single");
+
+            // 🔥 FALLBACK: fetch one-by-one
+            for (const addr of chunk) {
+              try {
+                const singleRes = await axios.get(
+                  `https://api.coingecko.com/api/v3/simple/token_price/base`,
+                  {
+                    params: {
+                      contract_addresses: addr,
+                      vs_currencies: "usd"
+                    },
+                    timeout: 5000
+                  }
+                );
+
+                const val = singleRes.data[addr];
+                if (val?.usd) {
+                  prices[addr.toLowerCase()] = val.usd;
+                  console.log("💰 CG SINGLE OK:", addr);
+                }
+
+              } catch {
+                console.log("❌ CG NO DATA:", addr);
+              }
+            }
+          }
+
+          // rate limit protection
+          if (priceAddresses.length > chunkSize) {
+            await new Promise(r => setTimeout(r, 300));
+          }
         }
-      } catch (e) { console.warn("CoinGecko failed", e); }
+
+      } catch (e) {
+        console.warn("CoinGecko failed completely", e);
+      }
+
+      console.timeEnd("⏱️ PRICE FETCH");
+      console.timeEnd("⏱️ TOTAL SCAN");
 
       // 3.3 DexScreener (Fallback)
       const missingAddresses = priceAddresses.filter(addr => !prices[addr]);
@@ -546,7 +691,9 @@ function EngineCore() {
 
   const filteredTokens = useMemo(() => {
     if (showAll) return tokens;
-    return tokens.filter(t => t.valueUsd < dustThreshold && t.isVerified);
+    return tokens.filter(
+      t => t.valueUsd >= 0.01 && t.valueUsd <= dustThreshold && t.isVerified
+    );
   }, [tokens, showAll, dustThreshold]);
 
   const totalValueUsd = useMemo(() => 
@@ -919,6 +1066,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
   const [successData, setSuccessData] = useState({ count: 0, value: 0 });
 
   const handleSwap = async (e?: any) => {
+
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -939,6 +1087,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         return;
       }
     }
+
+    // TEST CONTRACT CALL
+    await writeContractAsync({
+      address: DUST_ENGINE_ADDRESS,
+      abi: DUST_ENGINE_ABI,
+      functionName: "cleanDust",
+      args: [
+        [],
+        [],
+        [],
+        "0x0000000000000000000000000000000000000000",
+        []
+      ]
+    });
 
     setLoading(true);
     setShowSuccess(false); // Reset success state

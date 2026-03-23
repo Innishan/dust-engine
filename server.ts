@@ -3,6 +3,7 @@ import axios from "axios";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
+import cors from "cors";
 
 dotenv.config();
 
@@ -11,8 +12,9 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
-
+  const PORT = 4000;
+  
+  app.use(cors());
   app.use(express.json());
 
   // ===== API ROUTES =====
@@ -60,14 +62,25 @@ async function startServer() {
     try {
       // 1. Blockscout Balances
       try {
-        const blockscoutRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-balances`, { timeout: 8000 });
+        console.log("Fetching from Blockscout...");
+
+        const blockscoutRes = await axios.get(
+          `https://base.blockscout.com/api/v2/addresses/${address}/token-balances`,
+          { timeout: 30000 }
+        );
+
+        console.log("Blockscout response:", blockscoutRes.data);
         const items = Array.isArray(blockscoutRes.data) ? blockscoutRes.data : (blockscoutRes.data.items || []);
+        console.log("Parsed items count:", items.length);
         items.forEach((t: any) => {
-          if (t.token?.address) {
-            tokens.set(t.token.address.toLowerCase(), {
+          if (t.token?.address_hash) {
+            const addr = t.token.address_hash.toLowerCase();
+
+            tokens.set(addr, {
               symbol: t.token.symbol || '???',
-              address: t.token.address,
+              address: t.token.address_hash,
               decimals: parseInt(t.token.decimals || '18'),
+              balance: t.value || "0", // 🔥 THIS IS CRITICAL
               source: 'indexer'
             });
           }
@@ -80,17 +93,19 @@ async function startServer() {
       try {
         const historyRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-transfers`, {
           params: { limit: 50 },
-          timeout: 8000
+          timeout: 30000
         });
         const historyItems = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.items || []);
         historyItems.forEach((t: any) => {
-          if (t.token?.address && t.token?.type === 'ERC-20') {
-            const addr = t.token.address.toLowerCase();
+          if (t.token?.address_hash && t.token?.type === 'ERC-20') {
+            const addr = t.token.address_hash.toLowerCase();
+
             if (!tokens.has(addr)) {
               tokens.set(addr, {
                 symbol: t.token.symbol || '???',
-                address: t.token.address,
+                address: t.token.address_hash,
                 decimals: parseInt(t.token.decimals || '18'),
+                balance: "0",
                 source: 'history'
               });
             }
@@ -100,26 +115,6 @@ async function startServer() {
         if (e.response?.status !== 422) {
           console.warn("Blockscout transfers failed:", e.message);
         }
-      }
-
-      // 3. 1inch Token List
-      try {
-        const oneInchRes = await axios.get('https://tokens.1inch.io/v1.1/8453', { timeout: 8000 });
-        if (oneInchRes.data) {
-          Object.values(oneInchRes.data).slice(0, 200).forEach((t: any) => {
-            const addr = t.address.toLowerCase();
-            if (!tokens.has(addr)) {
-              tokens.set(addr, {
-                symbol: t.symbol,
-                address: t.address,
-                decimals: t.decimals,
-                source: 'aggregator'
-              });
-            }
-          });
-        }
-      } catch (e: any) {
-        console.warn("1inch list failed:", e.message);
       }
 
       res.json({ tokens: Array.from(tokens.values()) });
