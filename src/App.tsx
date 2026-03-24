@@ -1142,44 +1142,64 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
         for (const token of selectedTokens) {
           try {
+            // 🚫 Skip very small tokens
+            if (token.valueUsd < 0.05) {
+              addLog(`⏭️ SKIPPING ${token.symbol} (TOO SMALL <$0.05)`);
+              continue;
+            }
+            
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
+            
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 fromTokenAddress: token.address,
-                toTokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // Native ETH
+                toTokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
                 amount: token.balance.toString(),
                 fromAddress: address,
                 slippage: 3
               }
             });
 
-            if (swapRes.data?.tx) {
-              // 1. Approval call
-              calls.push({
-                to: token.address,
-                data: encodeFunctionData({
-                  abi: ERC20_ABI,
-                  functionName: 'approve',
-                  args: [ONE_INCH_ROUTER, token.balance]
-                })
-              });
+            const outputAmount = Number(swapRes.data?.toTokenAmount || 0);
 
-              // 2. Swap call
-              calls.push({
-                to: swapRes.data.tx.to as Address,
-                data: swapRes.data.tx.data,
-                value: BigInt(swapRes.data.tx.value || '0')
-              });
-
-              batchSuccessfulAddresses.push(token.address);
-              batchTotalValue += token.valueUsd;
-            } else {
-              addLog(`SWAP DATA UNAVAILABLE FOR ${token.symbol}`);
+            if (!swapRes.data?.tx || outputAmount <= 0) {
+              addLog(`❌ NO LIQUIDITY FOR ${token.symbol}`);
+              continue;
             }
-          } catch (e: any) {
-            addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}: ${e.message}`);
+
+            if (!swapRes.data.tx.to || !swapRes.data.tx.data) {
+              addLog(`❌ INVALID TX DATA FOR ${token.symbol}`);
+              continue;
+            }
+
+            addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
+
+            // 1. Approval call
+            calls.push({
+              to: token.address,
+              data: encodeFunctionData({
+                abi: ERC20_ABI,
+                functionName: 'approve',
+                args: [ONE_INCH_ROUTER, token.balance]
+              })
+            });
+
+            // 2. Swap call
+            calls.push({
+              to: swapRes.data.tx.to as Address,
+              data: swapRes.data.tx.data,
+              value: BigInt(swapRes.data.tx.value || '0')
+            });
+
+            batchSuccessfulAddresses.push(token.address);
+            batchTotalValue += token.valueUsd;
+          } else {
+            addLog(`SWAP DATA UNAVAILABLE FOR ${token.symbol}`);
           }
+        } catch (e: any) {
+          addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}: ${e.message}`);
         }
+      }
 
         if (calls.length > 0) {
           try {
