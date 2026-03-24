@@ -1268,6 +1268,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
               console.log("Swap TX Data:", swapRes.data.tx);
+              
+              console.log("🧪 SWAP TX DEBUG:", {
+                to: swapRes.data.tx.to,
+                data: swapRes.data.tx.data,
+                value: swapRes.data.tx.value,
+                gas: swapRes.data.tx.gas,
+              });
+
               const swapHash = await sendTransactionAsync({
                 account: address as Address,
                 to: swapRes.data.tx.to as Address,
