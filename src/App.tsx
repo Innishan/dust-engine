@@ -253,7 +253,7 @@ function EngineCore() {
         console.log("SCAN ADDRESS:", targetAddress);
 
         const backendRes = await axios.get(
-          `http://localhost:4000/api/scan/${targetAddress}`,
+          `/api/scan/${targetAddress}`,
           { timeout: 30000 }
         );
 
