@@ -1296,6 +1296,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 to: swapRes.data.tx.to as Address,
                 data: swapRes.data.tx.data,
                 value: BigInt(swapRes.data.tx.value || '0'),
+                gas: BigInt(swapRes.data.tx.gas || '1000000'), // 🔥 IMPORTANT
               });
               
               addLog(`SWAP TX SENT: ${swapHash.slice(0, 10)}...`);
