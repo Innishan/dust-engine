@@ -1162,6 +1162,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             });
 
             console.log("🔍 1INCH RESPONSE:", swapRes.data);
+            console.log("🔗 Wallet Address:", address);
+            console.log("🌐 Chain ID:", chain?.id);
             
             const outputAmount = Number(swapRes.data?.toTokenAmount || 0);
 
