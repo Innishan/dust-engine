@@ -254,7 +254,7 @@ function EngineCore() {
 
         const backendRes = await axios.get(
           `/api/scan/${targetAddress}`,
-          { timeout: 30000 }
+          { timeout: 60000 }
         );
 
         console.log("BACKEND RAW RESPONSE:", backendRes.data);
