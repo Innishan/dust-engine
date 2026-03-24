@@ -1191,13 +1191,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               value: BigInt(swapRes.data.tx.value || '0')
             });
 
-            batchSuccessfulAddresses.push(token.address);
-            batchTotalValue += token.valueUsd;
-          } else {
-            addLog(`SWAP DATA UNAVAILABLE FOR ${token.symbol}`);
-          }
         } catch (e: any) {
-          addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}: ${e.message}`);
+          addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}`);
         }
       }
 
