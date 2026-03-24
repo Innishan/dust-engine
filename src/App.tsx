@@ -1291,13 +1291,18 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 gas: swapRes.data.tx.gas,
               });
 
-              const swapHash = await sendTransactionAsync({
-                account: address as Address,
-                to: swapRes.data.tx.to as Address,
-                data: swapRes.data.tx.data,
-                value: BigInt(swapRes.data.tx.value || '0'),
-                gas: BigInt(swapRes.data.tx.gas || '1500000'), // 🔥 IMPORTANT
-              });
+              const tx = swapRes.data.tx;
+
+              const swapHash = await (window as any).ethereum.request({
+                method: "eth_sendTransaction",
+                params: [{
+                  from: address,
+                  to: tx.to,
+                  data: tx.data,
+                  value: `0x${BigInt(tx.value || '0').toString(16)}`,
+                  gas: `0x${BigInt(tx.gas || '1500000').toString(16)}`
+                }]
+              });              
               
               addLog(`SWAP TX SENT: ${swapHash.slice(0, 10)}...`);
               addLog("WAITING FOR SWAP CONFIRMATION...");
