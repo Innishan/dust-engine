@@ -1067,6 +1067,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
   const handleSwap = async (e?: any) => {
 
+    console.log("🚀 handleSwap triggered");
+    console.log("TOKENS:", tokens);
+    console.log("ADDRESS:", address);
+
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1088,30 +1092,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       }
     }
 
-    // TEST CONTRACT CALL
-    await writeContractAsync({
-      address: DUST_ENGINE_ADDRESS,
-      abi: DUST_ENGINE_ABI,
-      functionName: "cleanDust",
-      args: [
-        [],
-        [],
-        [],
-        "0x0000000000000000000000000000000000000000",
-        []
-      ]
-    });
-
     setLoading(true);
     setShowSuccess(false); // Reset success state
 
     try {
       const selectedTokens = tokens.filter(t => t.selected);
+      
+      console.log("✅ SELECTED TOKENS:", selectedTokens);
+
       let successCount = 0;
       let actualSwappedValue = 0;
       const successfulTokenAddresses: string[] = [];
       
       if (selectedTokens.length === 0) {
+        console.log("❌ NO TOKENS SELECTED");
         setLoading(false);
         return;
       }
@@ -1119,6 +1113,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       // Step 1: Routing via 1inch
       setStep('routing');
       addLog("QUERYING 1INCH AGGREGATOR...");
+      
+      console.log("📡 Calling 1inch API...");      
+
       await new Promise(r => setTimeout(r, 1000));
       
       // REAL TRANSACTION FLOW
@@ -1409,7 +1406,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       )}
 
       <button
-        onClick={(e) => handleSwap(e)}
+        onClick={(e) => {
+          console.log("🟢 BUTTON CLICKED");
+          handleSwap(e);
+        }}
         disabled={loading || tokens.filter(t => t.selected).length === 0}
         type="button"
         className={cn(
