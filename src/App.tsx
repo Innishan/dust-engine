@@ -1152,14 +1152,17 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
-                fromTokenAddress: token.address,
-                toTokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                src: token.address,
+                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
                 amount: token.balance.toString(),
-                fromAddress: address,
-                slippage: 3
+                from: address,
+                slippage: 3,
+                disableEstimate: true // 🔥 ADD THIS LINE
               }
             });
 
+            console.log("🔍 1INCH RESPONSE:", swapRes.data);
+            
             const outputAmount = Number(swapRes.data?.toTokenAmount || 0);
 
             if (!swapRes.data?.tx || outputAmount <= 0) {
