@@ -45,7 +45,7 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // --- Constants ---
-const ONE_INCH_ROUTER = '0x111111125421caae10460d09cc2b79471d860ac9' as Address;
+const ONE_INCH_ROUTER = '0x111111125421ca6dc452d289314280a0f8842a65' as Address;
 const PROTOCOL_FEE_RECIPIENT = '0xEe36C3c644240302eB8121F66D4e23C068512a40' as Address; // Fee collector
 const WETH = '0x4200000000000000000000000000000000000006' as Address;
 
@@ -1159,22 +1159,26 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               address: token.address,
               abi: ERC20_ABI,
               functionName: 'allowance',
-              args: [address, ONE_INCH_ROUTER]
+              args: [address as Address, ONE_INCH_ROUTER as Address]
             });
-
+            
             console.log(`Allowance for ${token.symbol}:`, allowance.toString());
 
-            if (allowance < token.balance) {
+            console.log(`Balance for ${token.symbol}:`, token.balance.toString());
+            console.log(`Comparing -> allowance < balance:`, allowance < token.balance);
+
+            if (allowance < BigInt(token.balance)) {
               console.log(`🔐 Approving ${token.symbol}`);
             
-              calls.push({
-                to: token.address,
-                data: encodeFunctionData({
-                  abi: ERC20_ABI,
-                  functionName: 'approve',
-                  args: [ONE_INCH_ROUTER, token.balance]
-                })
-              });
+              // calls.push({
+              //   to: token.address,
+              //   data: encodeFunctionData({
+              //     abi: ERC20_ABI,
+              //     functionName: 'approve',
+              //     args: [ONE_INCH_ROUTER, token.balance]
+              //   })
+              // });
+            
             } else {
               console.log(`✅ ${token.symbol} already approved`);
             }
@@ -1312,6 +1316,12 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
+              
+              if (allowance < BigInt(token.balance)) {
+                addLog(`⚠️ Skipping ${token.symbol} (not approved yet)`);
+                continue;
+              }               
+
               console.log("Swap TX Data:", swapRes.data.tx);
               
               console.log("🧪 SWAP TX DEBUG:", {
