@@ -1112,6 +1112,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       
       // Step 1: Routing via 1inch
       setStep('routing');
+      addLog("⚠️ You may be asked to approve tokens for swapping.");
+      addLog("Only selected tokens will be used. No other funds are touched.");
       addLog("QUERYING 1INCH AGGREGATOR...");
       
       console.log("📡 Calling 1inch API...");      
@@ -1133,6 +1135,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
       if (batchSupported) {
         addLog("SMART WALLET DETECTED: PREPARING ATOMIC BATCH...");
+        
         const calls = [];
         const batchSuccessfulAddresses: string[] = [];
         let batchTotalValue = 0;
@@ -1144,7 +1147,17 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               addLog(`⏭️ SKIPPING ${token.symbol} (TOO SMALL <$0.05)`);
               continue;
             }
-            
+           
+            // 🔥 ✅ ADD ALLOWANCE CHECK HERE
+            const allowance = await publicClient.readContract({
+              address: token.address,
+              abi: ERC20_ABI,
+              functionName: 'allowance',
+              args: [address, ONE_INCH_ROUTER]
+            });
+
+            console.log(`Allowance for ${token.symbol}:`, allowance.toString());
+ 
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
             
             const swapRes = await axios.get('/api/swap/quote', {
@@ -1176,15 +1189,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
 
-            // 1. Approval call
-            calls.push({
-              to: token.address,
-              data: encodeFunctionData({
-                abi: ERC20_ABI,
-                functionName: 'approve',
-                args: [ONE_INCH_ROUTER, token.balance]
-              })
-            });
+            if (allowance < token.balance) {
+              console.log(`🔐 Approving ${token.symbol}`);
+
+              calls.push({
+                to: token.address,
+                data: encodeFunctionData({
+                  abi: ERC20_ABI,
+                  functionName: 'approve',
+                  args: [ONE_INCH_ROUTER, token.balance + BigInt(1)]
+                })
+              });
+            } else {
+              console.log(`✅ ${token.symbol} already approved`);
+            }
 
             // 2. Swap call
             calls.push({
@@ -1193,10 +1211,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               value: BigInt(swapRes.data.tx.value || '0')
             });
 
-        } catch (e: any) {
-          addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}`);
+            batchSuccessfulAddresses.push(token.address);
+            batchTotalValue += token.valueUsd;
+        
+          } catch (e: any) {
+            addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}`);
+            console.error(err);        
+          }
         }
-      }
 
         if (calls.length > 0) {
           try {
@@ -1227,13 +1249,15 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         }
       } else {
         // Fallback to sequential for standard wallets
+        
         for (const token of selectedTokens) {
-          addLog(`PROCESSING ${token.symbol}...`);
-          
-          // 1. Check Allowance & Approve
-          setStep('approving');
           try {
-            const allowance = await (publicClient as any).readContract({
+            addLog(`PROCESSING ${token.symbol}...`);
+          
+            // 1. Check Allowance & Approve
+            setStep('approving');
+         
+            const allowance = await publicClient.readContract({
               address: token.address,
               abi: ERC20_ABI,
               functionName: 'allowance',
@@ -1242,6 +1266,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             if (allowance < token.balance) {
               addLog(`APPROVING ${token.symbol} FOR 1INCH...`);
+              
               const approveHash = await writeContractAsync({
                 account: address as Address,
                 chain: base,
@@ -1250,6 +1275,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 functionName: 'approve',
                 args: [ONE_INCH_ROUTER, token.balance],
               });
+              
               addLog(`APPROVE TX SENT: ${approveHash.slice(0, 10)}...`);
               addLog("WAITING FOR CONFIRMATION...");
               
