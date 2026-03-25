@@ -1097,7 +1097,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
     try {
       const selectedTokens = tokens.filter(t => t.selected);
-      
+
+      // 🔥 ADD THIS RIGHT BELOW
+      const validTokens = selectedTokens.filter(
+        t => t.valueUsd >= 0.05 && t.balance > 0
+      );
+
+      console.log("✅ VALID TOKENS:", validTokens);      
       console.log("✅ SELECTED TOKENS:", selectedTokens);
 
       let successCount = 0;
@@ -1140,7 +1146,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         const batchSuccessfulAddresses: string[] = [];
         let batchTotalValue = 0;
 
-        for (const token of selectedTokens) {
+        for (const token of validTokens) {
           try {
             // 🚫 Skip very small tokens
             if (token.valueUsd < 0.05) {
@@ -1157,6 +1163,21 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             });
 
             console.log(`Allowance for ${token.symbol}:`, allowance.toString());
+
+            if (allowance < token.balance) {
+              console.log(`🔐 Approving ${token.symbol}`);
+            
+              calls.push({
+                to: token.address,
+                data: encodeFunctionData({
+                  abi: ERC20_ABI,
+                  functionName: 'approve',
+                  args: [ONE_INCH_ROUTER, token.balance]
+                })
+              });
+            } else {
+              console.log(`✅ ${token.symbol} already approved`);
+            }
  
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
             
@@ -1172,8 +1193,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             });
 
             console.log("🔍 1INCH RESPONSE:", swapRes.data);
-            console.log("🔗 Wallet Address:", address);
-            console.log("🌐 Chain ID:", chain?.id);
             
             const outputAmount = Number(swapRes.data?.toTokenAmount || 0);
 
@@ -1185,23 +1204,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             if (!swapRes.data.tx.to || !swapRes.data.tx.data) {
               addLog(`❌ INVALID TX DATA FOR ${token.symbol}`);
               continue;
-            }
-
-            addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
-
-            if (allowance < token.balance) {
-              console.log(`🔐 Approving ${token.symbol}`);
-
-              calls.push({
-                to: token.address,
-                data: encodeFunctionData({
-                  abi: ERC20_ABI,
-                  functionName: 'approve',
-                  args: [ONE_INCH_ROUTER, token.balance + BigInt(1)]
-                })
-              });
-            } else {
-              console.log(`✅ ${token.symbol} already approved`);
             }
 
             // 2. Swap call
@@ -1250,7 +1252,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       } else {
         // Fallback to sequential for standard wallets
         
-        for (const token of selectedTokens) {
+        for (const token of validTokens) {
           try {
             addLog(`PROCESSING ${token.symbol}...`);
           
