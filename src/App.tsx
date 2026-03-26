@@ -1185,14 +1185,21 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
  
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
             
+            const amount = BigInt(token.balance);
+
+            if (amount <= 0n) {
+              console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
+              continue;
+            }
+
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
                 dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: token.balance.toString(),
+                amount: amount.toString(),
                 from: address,
                 slippage: 3,
-                disableEstimate: true // 🔥 ADD THIS LINE
+                disableEstimate: true
               }
             });
 
@@ -1304,16 +1311,24 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           setStep('swapping');
           addLog(`SWAPPING ${token.symbol} -> ETH...`);
           try {
+            const amount = BigInt(token.balance);
+
+            if (amount <= 0n) {
+              console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
+              continue;
+            }
+
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
                 dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: token.balance.toString(),
+                amount: amount.toString(),
                 from: address,
                 slippage: 3,
                 disableEstimate: true
               }
             });
+
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
               
