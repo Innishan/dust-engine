@@ -1179,6 +1179,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 })
               });
             
+              continue;
             } else {
               console.log(`✅ ${token.symbol} already approved`);
             }
