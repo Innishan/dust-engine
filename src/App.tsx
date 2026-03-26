@@ -1139,7 +1139,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         batchSupported = !!capabilities?.[base.id.toString()]?.atomicBatch?.supported;
       } catch (e) { console.warn("Batching not supported", e); }
 
-      if (batchSupported) {
+      if (false) {
         addLog("SMART WALLET DETECTED: PREPARING ATOMIC BATCH...");
         
         const calls = [];
@@ -1168,8 +1168,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log(`Comparing -> allowance < balance:`, allowance < token.balance);
 
             if (allowance < BigInt(token.balance)) {
-              console.log(`🔐 Approving ${token.symbol}`);
-            
               calls.push({
                 to: token.address,
                 data: encodeFunctionData({
@@ -1178,8 +1176,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                   args: [ONE_INCH_ROUTER, token.balance]
                 })
               });
-            
-              continue;
+
+              console.log(`✅ Approval added, will swap after approval`);            
             } else {
               console.log(`✅ ${token.symbol} already approved`);
             }
@@ -1237,6 +1235,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         if (calls.length > 0) {
           try {
             addLog(`SENDING BATCH OF ${calls.length} CALLS...`);
+            console.log("🚀 FINAL BATCH CALLS:", calls);
             const batchHash = await (window as any).ethereum.request({
               method: 'wallet_sendCalls',
               params: [{
