@@ -1170,14 +1170,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             if (allowance < BigInt(token.balance)) {
               console.log(`🔐 Approving ${token.symbol}`);
             
-              // calls.push({
-              //   to: token.address,
-              //   data: encodeFunctionData({
-              //     abi: ERC20_ABI,
-              //     functionName: 'approve',
-              //     args: [ONE_INCH_ROUTER, token.balance]
-              //   })
-              // });
+              calls.push({
+                to: token.address,
+                data: encodeFunctionData({
+                  abi: ERC20_ABI,
+                  functionName: 'approve',
+                  args: [ONE_INCH_ROUTER, token.balance]
+                })
+              });
             
             } else {
               console.log(`✅ ${token.symbol} already approved`);
@@ -1222,7 +1222,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         
           } catch (e: any) {
             addLog(`FAILED TO GET SWAP DATA FOR ${token.symbol}`);
-            console.error(err);        
+            console.error(e);        
           }
         }
 
@@ -1306,22 +1306,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           try {
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
-                fromTokenAddress: token.address,
-                toTokenAddress: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // Native ETH
+                src: token.address,
+                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
                 amount: token.balance.toString(),
-                fromAddress: address,
-                slippage: 3
+                from: address,
+                slippage: 3,
+                disableEstimate: true
               }
             });
-
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
               
-              if (allowance < BigInt(token.balance)) {
-                addLog(`⚠️ Skipping ${token.symbol} (not approved yet)`);
-                continue;
-              }               
-
+              // ✅ DO NOT re-check old allowance here
+              addLog(`✅ Proceeding to swap ${token.symbol}`);
+              
               console.log("Swap TX Data:", swapRes.data.tx);
               
               console.log("🧪 SWAP TX DEBUG:", {
