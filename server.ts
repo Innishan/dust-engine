@@ -126,22 +126,25 @@ async function startServer() {
 
   // 1inch Swap endpoint - YOUR ORIGINAL FUNCTION
   app.get("/api/swap/quote", async (req, res) => {
-    const { fromTokenAddress, toTokenAddress, amount, fromAddress, slippage } = req.query;
-    
-    if (!process.env.ONE_INCH_API_KEY) {
-      return res.status(401).json({ 
-        error: "Invalid API key", 
-        description: "ONE_INCH_API_KEY is missing in environment variables" 
+    const { src, dst, amount, from, slippage } = req.query;
+
+    // 🔍 DEBUG LOG (IMPORTANT)
+    console.log("🧪 SWAP PARAMS:", { src, dst, amount, from, slippage });
+
+    if (!src || !dst || !amount || !from) {
+      return res.status(400).json({
+        error: "Missing required params",
+        received: { src, dst, amount, from }
       });
     }
 
     try {
       const response = await axios.get(`https://api.1inch.dev/swap/v6.0/8453/swap`, {
         params: {
-          src: fromTokenAddress,
-          dst: toTokenAddress,
-          amount: amount,
-          from: fromAddress,
+          src,
+          dst,
+          amount,
+          from,
           slippage: slippage || 3,
           disableEstimate: true
         },
