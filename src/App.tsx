@@ -1367,7 +1367,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               address: token.address,
               abi: ERC20_ABI,
               functionName: 'allowance',
-              args: [address, spender]
+              args: [address as Address, spender]
             });
 
             if (allowance < amount) {
