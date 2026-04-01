@@ -310,7 +310,7 @@ function EngineCore() {
         const potentialAddresses = discoveredTokens.map(t => t.address).filter(Boolean);
         
         if (potentialAddresses.length > 0) {
-          const dsRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${potentialAddresses.slice(0, 30).join(',')}`, { timeout: 8000 });
+          const dsRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${potentialAddresses.slice(0, 100).join(',')}`, { timeout: 8000 });
           
           if (dsRes.data?.pairs) {
             dsRes.data.pairs.forEach((pair: any) => {
@@ -555,19 +555,42 @@ function EngineCore() {
       const missingAddresses = priceAddresses.filter(addr => !prices[addr]);
       if (missingAddresses.length > 0) {
         try {
-          for (let i = 0; i < missingAddresses.length; i += 30) {
-            const chunk = missingAddresses.slice(i, i + 30);
-            const dsRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`, { timeout: 8000 });
-            if (dsRes.data?.pairs) {
-              dsRes.data.pairs.forEach((pair: any) => {
-                const addr = pair.baseToken.address.toLowerCase();
-                if (pair.priceUsd) prices[addr] = parseFloat(pair.priceUsd);
-              });
-            }
-          }
-        } catch (e) { console.warn("DexScreener failed", e); }
-      }
+          const priceCache: Record<string, number> = {};
 
+          try {
+            const chunks = [];
+            for (let i = 0; i < missingAddresses.length; i += 80) {
+              chunks.push(missingAddresses.slice(i, i + 80));
+            }
+
+            const responses = await Promise.all(
+              chunks.map(chunk =>
+                axios.get(
+                  `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`,
+                  { timeout: 8000 }
+                ).catch(() => null)
+              )
+            );
+
+            responses.forEach(res => {
+              if (!res?.data?.pairs) return;
+
+              res.data.pairs.forEach((pair: any) => {
+                const addr = pair.baseToken.address.toLowerCase();
+                if (pair.priceUsd) {
+                  priceCache[addr] = parseFloat(pair.priceUsd);
+                }
+              });
+            });
+
+            // merge into your existing prices object
+            Object.assign(prices, priceCache);
+
+          } catch (e) {
+             console.warn("DexScreener failed", e);
+          }
+        }
+      }
       const fallbackPrices: Record<string, number> = {
         '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 1.0, // USDC
         '0xfde4c96c8593536e31f229ea8f37b2ad3d69d441': 1.0, // USDT
@@ -1145,7 +1168,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         const calls = [];
         const batchSuccessfulAddresses: string[] = [];
         let batchTotalValue = 0;
-
+        
         for (const token of validTokens) {
           try {
             // 🚫 Skip very small tokens
@@ -1191,11 +1214,22 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
 
+            // ✅ APPROVAL CHECK (prevents repeated approvals)
+            if (!approvedTokens.has(token.address)) {
+              addLog(`🟡 Approving ${token.symbol}...`);
+              // approval will be triggered automatically by wallet on first tx
+              approvedTokens.add(token.address);
+            }
+
+            const rawAmount = BigInt(
+              Math.floor(Number(token.balance) * 10 ** token.decimals)
+            );
+
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
                 dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: amount.toString(),
+                amount: rawAmount.toString(),
                 from: address,
                 slippage: 3,
                 disableEstimate: true
@@ -1263,8 +1297,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       } else {
         // Fallback to sequential for standard wallets
         
+        const approvedTokens = new Set<string>();
+
         for (const token of validTokens) {
           try {
+            addLog(`🔄 Swapping ${token.symbol}...`);        
             addLog(`PROCESSING ${token.symbol}...`);
           
             // 1. Check Allowance & Approve
@@ -1278,8 +1315,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             });
 
             if (allowance < token.balance) {
-              addLog(`APPROVING ${token.symbol} FOR 1INCH...`);
-              
+              if (!approvedTokens.has(token.address)) {
+                addLog(`🟡 Approving ${token.symbol}...`);
+                approvedTokens.add(token.address);
+              }
+
               const approveHash = await writeContractAsync({
                 account: address as Address,
                 chain: base,
@@ -1288,11 +1328,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 functionName: 'approve',
                 args: [ONE_INCH_ROUTER, token.balance],
               });
-              
+
               addLog(`APPROVE TX SENT: ${approveHash.slice(0, 10)}...`);
-              addLog("WAITING FOR CONFIRMATION...");
-              
-              // Wait for approval to be mined
               await publicClient?.waitForTransactionReceipt({ hash: approveHash });
               addLog("APPROVAL CONFIRMED.");
             } else {
@@ -1309,7 +1346,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
           // 2. Real Swap (Attempt via Proxy)
           setStep('swapping');
-          addLog(`SWAPPING ${token.symbol} -> ETH...`);
           try {
             const amount = BigInt(token.balance);
 
@@ -1318,11 +1354,15 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
 
+            const rawAmount = BigInt(
+              Math.floor(Number(token.balance) * 10 ** token.decimals)
+            );
+
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
                 dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: amount.toString(),
+                amount: rawAmount.toString(),
                 from: address,
                 slippage: 3,
                 disableEstimate: true
