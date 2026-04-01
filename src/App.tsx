@@ -553,44 +553,44 @@ function EngineCore() {
 
       // 3.3 DexScreener (Fallback)
       const missingAddresses = priceAddresses.filter(addr => !prices[addr]);
+      
       if (missingAddresses.length > 0) {
+        const priceCache: Record<string, number> = {};
+
         try {
-          const priceCache: Record<string, number> = {};
-
-          try {
-            const chunks = [];
-            for (let i = 0; i < missingAddresses.length; i += 80) {
-              chunks.push(missingAddresses.slice(i, i + 80));
-            }
-
-            const responses = await Promise.all(
-              chunks.map(chunk =>
-                axios.get(
-                  `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`,
-                  { timeout: 8000 }
-                ).catch(() => null)
-              )
-            );
-
-            responses.forEach(res => {
-              if (!res?.data?.pairs) return;
-
-              res.data.pairs.forEach((pair: any) => {
-                const addr = pair.baseToken.address.toLowerCase();
-                if (pair.priceUsd) {
-                  priceCache[addr] = parseFloat(pair.priceUsd);
-                }
-              });
-            });
-
-            // merge into your existing prices object
-            Object.assign(prices, priceCache);
-
-          } catch (e) {
-             console.warn("DexScreener failed", e);
+          const chunks = [];
+          for (let i = 0; i < missingAddresses.length; i += 80) {
+            chunks.push(missingAddresses.slice(i, i + 80));
           }
+
+          const responses = await Promise.all(
+            chunks.map(chunk =>
+              axios.get(
+                `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`,
+                { timeout: 8000 }
+              ).catch(() => null)
+            )
+          );
+
+          responses.forEach(res => {
+            if (!res?.data?.pairs) return;
+
+            res.data.pairs.forEach((pair: any) => {
+              const addr = pair.baseToken.address.toLowerCase();
+              if (pair.priceUsd) {
+                priceCache[addr] = parseFloat(pair.priceUsd);
+              }
+            });
+          });
+
+          // merge into your existing prices object
+          Object.assign(prices, priceCache);
+
+        } catch (e) {
+          console.warn("DexScreener failed", e);
         }
       }
+
       const fallbackPrices: Record<string, number> = {
         '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 1.0, // USDC
         '0xfde4c96c8593536e31f229ea8f37b2ad3d69d441': 1.0, // USDT
