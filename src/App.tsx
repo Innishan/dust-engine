@@ -1089,7 +1089,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
   const [successData, setSuccessData] = useState({ count: 0, value: 0 });
 
   const handleSwap = async (e?: any) => {
+    console.log("🔥 NEW CODE LOADED");
 
+    console.log("🟢 BUTTON CLICKED");
+    
     console.log("🚀 handleSwap triggered");
     console.log("TOKENS:", tokens);
     console.log("ADDRESS:", address);
@@ -1140,14 +1143,19 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       }
       
       // Step 1: Routing via 1inch
+      console.log("🚨 ENTERED STEP 1");
+
       setStep('routing');
-      addLog("⚠️ You may be asked to approve tokens for swapping.");
-      addLog("Only selected tokens will be used. No other funds are touched.");
+
+      console.log("✅ AFTER setStep routing");
+
       addLog("QUERYING 1INCH AGGREGATOR...");
-      
-      console.log("📡 Calling 1inch API...");      
+
+      console.log("✅ AFTER addLog");
 
       await new Promise(r => setTimeout(r, 1000));
+
+      console.log("✅ AFTER DELAY STEP 1");
       
       // REAL TRANSACTION FLOW
       
