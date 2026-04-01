@@ -1412,9 +1412,17 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                   amount: amount.toString(),
                   from: address,
                   slippage: 3,
-                  disableEstimate: true
                 }
               });
+
+              console.log("🔥 SWAP RESPONSE:", swapRes.data);
+
+              // ❗ VALIDATION (VERY IMPORTANT)
+              if (!swapRes.data || !swapRes.data.tx) {
+                console.log("❌ INVALID SWAP RESPONSE");
+                addLog(`❌ No route for ${token.symbol}`);
+                continue;
+              } 
 
               const spender = swapRes.data.approvalAddress;
 
@@ -1423,7 +1431,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               console.log("🧪 SPENDER:", spender);
 
             } catch (err: any) {
-              console.error("❌ SWAP API ERROR:", err.response?.data || err.message);
+              console.log("❌ SWAP API ERROR:", err.response?.data || err.message);
               addLog(`❌ Swap failed for ${token.symbol}`);
               continue;
             }

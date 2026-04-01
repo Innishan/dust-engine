@@ -149,8 +149,13 @@ async function startServer() {
         timeout: 10000
       });
 
-      console.log("🧠 FULL LI.FI RESPONSE:", response.data);
-      console.log("🧠 APPROVAL ADDRESS:", response.data.estimate?.approvalAddress);
+      if (!response.data.transactionRequest) {
+        console.log("❌ NO ROUTE FROM LI.FI:", response.data);
+        return res.status(500).json({
+          error: "No route found",
+          full: response.data
+        });
+      }
 
       // ⚠️ Adapt response to your frontend format
       const tx = response.data.transactionRequest;
