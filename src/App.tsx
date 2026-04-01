@@ -1325,8 +1325,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             addLog(`🔄 Swapping ${token.symbol}...`);        
             addLog(`PROCESSING ${token.symbol}...`);
 
-            try {
-              if (typeof token.balance === "bigint") {
+            if (typeof token.balance === "bigint") {
               amount = token.balance;
             } else if (
               typeof token.balance === "string" &&
@@ -1340,19 +1339,28 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 token.decimals
               );
             }
+
+            console.log("🪙 TOKEN:", token.symbol);
+            console.log("RAW BALANCE:", token.balance);
+            console.log("DECIMALS:", token.decimals);
+            console.log("FINAL AMOUNT:", amount.toString());
+          
           } catch (e) {
             console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
             continue;
           }
+
+          amount = (amount * 95n) / 100n;
 
           if (amount <= 0n) {
             console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
             continue;
           }
           
-            // 1. Check Allowance & Approve
+          // 1. Check Allowance & Approve
+          try {
             setStep('approving');
-         
+
             const allowance = await publicClient.readContract({
               address: token.address,
               abi: ERC20_ABI,
@@ -1362,7 +1370,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             if (allowance < amount) {
               addLog(`APPROVING ${token.symbol} FOR 1INCH...`);
-              
+    
               const approveHash = await writeContractAsync({
                 account: address as Address,
                 chain: base,
@@ -1378,6 +1386,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             } else {
               addLog(`${token.symbol} ALREADY APPROVED`);
             }
+
           } catch (approveErr: any) {
             if (approveErr.message?.includes('User rejected')) {
               addLog(`USER REJECTED ${token.symbol} APPROVAL`);
