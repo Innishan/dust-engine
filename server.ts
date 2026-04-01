@@ -149,8 +149,12 @@ async function startServer() {
         timeout: 10000
       });
 
+      console.log("🧠 FULL LI.FI RESPONSE:", response.data);
+      console.log("🧠 APPROVAL ADDRESS:", response.data.estimate?.approvalAddress);
+
       // ⚠️ Adapt response to your frontend format
       const tx = response.data.transactionRequest;
+      const approvalAddress = response.data.estimate?.approvalAddress;
 
       res.json({
         tx: {
@@ -158,7 +162,8 @@ async function startServer() {
           data: tx.data,
           value: tx.value || "0",
           gas: tx.gasLimit || "1500000"
-        }
+        },
+        approvalAddress
       });
 
     } catch (e: any) {

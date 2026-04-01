@@ -1184,7 +1184,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               address: token.address,
               abi: ERC20_ABI,
               functionName: 'allowance',
-              args: [address as Address, ONE_INCH_ROUTER as Address]
+              args: [address, spender]
             });
             
             console.log(`Allowance for ${token.symbol}:`, allowance.toString());
@@ -1198,7 +1198,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 data: encodeFunctionData({
                   abi: ERC20_ABI,
                   functionName: 'approve',
-                  args: [ONE_INCH_ROUTER, amount]
+                  args: [spender, amount]
                 })
               });
 
@@ -1254,6 +1254,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 disableEstimate: true
               }
             });
+
+            const spender = swapRes.data.approvalAddress;
 
             console.log("🔍 1INCH RESPONSE:", swapRes.data);
             
@@ -1365,7 +1367,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               address: token.address,
               abi: ERC20_ABI,
               functionName: 'allowance',
-              args: [address as Address, ONE_INCH_ROUTER],
+              args: [address, spender]
             });
 
             if (allowance < amount) {
@@ -1377,7 +1379,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 address: token.address,
                 abi: ERC20_ABI,
                 functionName: 'approve',
-                args: [ONE_INCH_ROUTER, amount]
+                args: [spender, amount]
               });
 
               addLog(`APPROVE TX SENT: ${approveHash.slice(0, 10)}...`);
@@ -1413,6 +1415,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                   disableEstimate: true
                 }
               });
+
+              const spender = swapRes.data.approvalAddress;
+
+              console.log("🧪 TOKEN:", token.symbol);
+              console.log("🧪 AMOUNT:", amount.toString());
+              console.log("🧪 SPENDER:", spender);
+
             } catch (err: any) {
               console.error("❌ SWAP API ERROR:", err.response?.data || err.message);
               addLog(`❌ Swap failed for ${token.symbol}`);
