@@ -1210,15 +1210,18 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             let amount: bigint;
 
             try {
-              // If already bigint-like string
-              if (
+              if (typeof token.balance === "bigint") {
+                // ✅ Already correct format
+                amount = token.balance;
+              } else if (
                 typeof token.balance === "string" &&
                 token.balance.length > 15 &&
                 !token.balance.includes(".")
               ) {
+                // ✅ Large integer string (wei)
                 amount = BigInt(token.balance);
               } else {
-                // If human readable (like "1.23")
+                // ✅ Human readable (like "1.23")
                 amount = parseUnits(
                   token.balance.toString(),
                   token.decimals
@@ -1324,27 +1327,32 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             let amount: bigint;
 
             try {
-              if (
-                typeof token.balance === "string" &&
-                token.balance.length > 15 &&
-                !token.balance.includes(".")
-              ) {
-                amount = BigInt(token.balance);
-              } else {
-                amount = parseUnits(
-                  token.balance.toString(), 
-                  token.decimals
-                );
-              }
-            } catch (e) {
-              console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
-              continue;
+              if (typeof token.balance === "bigint") {
+              // ✅ Already correct format
+              amount = token.balance;
+            } else if (
+              typeof token.balance === "string" &&
+              token.balance.length > 15 &&
+              !token.balance.includes(".")
+            ) {
+              // ✅ Large integer string (wei)
+              amount = BigInt(token.balance);
+            } else {
+              // ✅ Human readable (like "1.23")
+              amount = parseUnits(
+                token.balance.toString(),
+                token.decimals
+              );
             }
+          } catch (e) {
+            console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
+            continue;
+          }
 
-            if (amount <= 0n) {
-              console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
-              continue;
-            }
+          if (amount <= 0n) {
+            console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
+            continue;
+          }
           
             // 1. Check Allowance & Approve
             setStep('approving');
