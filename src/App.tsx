@@ -1384,9 +1384,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           }
 
           // 2. Real Swap (Attempt via Proxy)
-          setStep('swapping');
+          try {
+            setStep('swapping');
             
-          let swapRes;
+            let swapRes;
 
             try {
               swapRes = await axios.get('/api/swap/quote', {
