@@ -1221,10 +1221,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               approvedTokens.add(token.address);
             }
 
-            const rawAmount = BigInt(
-              Math.floor(Number(token.balance) * 10 ** token.decimals)
-            );
-
+            const rawAmount = BigInt(token.balance);
+            
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
@@ -1354,20 +1352,26 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
 
-            const rawAmount = BigInt(
-              Math.floor(Number(token.balance) * 10 ** token.decimals)
-            );
+            const rawAmount = BigInt(token.balance);
+            
+            let swapRes;
 
-            const swapRes = await axios.get('/api/swap/quote', {
-              params: {
-                src: token.address,
-                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: rawAmount.toString(),
-                from: address,
-                slippage: 3,
-                disableEstimate: true
-              }
-            });
+            try {
+              swapRes = await axios.get('/api/swap/quote', {
+                params: {
+                  src: token.address,
+                  dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                  amount: rawAmount.toString(),
+                  from: address,
+                  slippage: 3,
+                  disableEstimate: true
+                }
+              });
+            } catch (err: any) {
+              console.error("❌ SWAP API ERROR:", err.response?.data || err.message);
+              addLog(`❌ Swap failed for ${token.symbol}`);
+              continue;
+            }
 
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
