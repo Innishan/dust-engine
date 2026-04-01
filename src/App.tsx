@@ -1319,6 +1319,32 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           try {
             addLog(`🔄 Swapping ${token.symbol}...`);        
             addLog(`PROCESSING ${token.symbol}...`);
+
+            // 🔥 MOVE AMOUNT LOGIC HERE
+            let amount: bigint;
+
+            try {
+              if (
+                typeof token.balance === "string" &&
+                token.balance.length > 15 &&
+                !token.balance.includes(".")
+              ) {
+                amount = BigInt(token.balance);
+              } else {
+                amount = parseUnits(
+                  token.balance.toString(), 
+                  token.decimals
+                );
+              }
+            } catch (e) {
+              console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
+              continue;
+            }
+
+            if (amount <= 0n) {
+              console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
+              continue;
+            }
           
             // 1. Check Allowance & Approve
             setStep('approving');
@@ -1359,34 +1385,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
           // 2. Real Swap (Attempt via Proxy)
           setStep('swapping');
-          let amount: bigint;
-
-            try {
-              // If already bigint-like string
-              if (
-                typeof token.balance === "string" &&
-                token.balance.length > 15 &&
-                !token.balance.includes(".")
-              ) {
-                amount = BigInt(token.balance);
-              } else {
-                // If human readable (like "1.23")
-                amount = parseUnits(
-                  token.balance.toString(),
-                  token.decimals
-                );
-              }
-            } catch (e) {
-              console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
-              continue;
-            }
-
-            if (amount <= 0n) {
-              console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
-              continue;
-            }
             
-            let swapRes;
+          let swapRes;
 
             try {
               swapRes = await axios.get('/api/swap/quote', {
