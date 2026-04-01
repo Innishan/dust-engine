@@ -1405,6 +1405,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             let swapRes;
 
             try {
+              console.log("🚨 REACHED BEFORE SWAP API");
               swapRes = await axios.get('/api/swap/quote', {
                 params: {
                   src: token.address,
