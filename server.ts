@@ -124,12 +124,10 @@ async function startServer() {
     }
   });
 
-  // 1inch Swap endpoint - YOUR ORIGINAL FUNCTION
   app.get("/api/swap/quote", async (req, res) => {
-    const { src, dst, amount, from, slippage } = req.query;
+    const { src, dst, amount, from } = req.query;
 
-    // 🔍 DEBUG LOG (IMPORTANT)
-    console.log("🧪 SWAP PARAMS:", { src, dst, amount, from, slippage });
+    console.log("🧪 LI.FI PARAMS:", { src, dst, amount, from });
 
     if (!src || !dst || !amount || !from) {
       return res.status(400).json({
@@ -139,25 +137,33 @@ async function startServer() {
     }
 
     try {
-      const response = await axios.get(`https://api.1inch.dev/swap/v6.0/8453/swap`, {
+      const response = await axios.get("https://li.quest/v1/quote", {
         params: {
-          src,
-          dst,
-          amount,
-          from,
-          slippage: slippage || 3,
-          disableEstimate: true
-        },
-        headers: {
-          'Authorization': `Bearer ${process.env.ONE_INCH_API_KEY || ''}`,
-          'accept': 'application/json'
+          fromChain: 8453, // Base
+          toChain: 8453,
+          fromToken: src,
+          toToken: dst,
+          fromAddress: from,
+          fromAmount: amount,
         },
         timeout: 10000
       });
-      res.json(response.data);
+
+      // ⚠️ Adapt response to your frontend format
+      const tx = response.data.transactionRequest;
+
+      res.json({
+        tx: {
+          to: tx.to,
+          data: tx.data,
+          value: tx.value || "0",
+          gas: tx.gasLimit || "1500000"
+        }
+      });
+
     } catch (e: any) {
-      console.error("1inch swap failed:", e.response?.data || e.message);
-      res.status(e.response?.status || 500).json(e.response?.data || { error: "Swap quote failed" });
+      console.error("LI.FI failed:", e.response?.data || e.message);
+      res.status(500).json(e.response?.data || { error: "LI.FI quote failed" });
     }
   });
 
