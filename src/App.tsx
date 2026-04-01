@@ -1330,7 +1330,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
         for (const token of validTokens) {
           let amount: bigint;        
-
+          console.log("🚀 STARTING SWAP FOR TOKEN:", token.symbol);
           try {
             addLog(`🔄 Swapping ${token.symbol}...`);        
             addLog(`PROCESSING ${token.symbol}...`);
@@ -1354,7 +1354,15 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log("RAW BALANCE:", token.balance);
             console.log("DECIMALS:", token.decimals);
             console.log("FINAL AMOUNT:", amount.toString());
-          
+            console.log("🚨 CHECKPOINT AFTER AMOUNT");
+
+            if (!amount || amount === "0") {
+              console.log("❌ SKIPPED: ZERO AMOUNT");
+              continue;
+            }
+ 
+            console.log("🚨 BEFORE SWAP BLOCK");          
+
           } catch (e) {
             console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
             continue;
