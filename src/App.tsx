@@ -1362,7 +1362,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             }
  
             console.log("🚨 BEFORE SWAP BLOCK");          
-
+            console.log("🚨 JUST BEFORE TRY LINE");
+          
           } catch (e) {
             console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
             continue;
@@ -1415,6 +1416,12 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           }
 
           // 2. Real Swap (Attempt via Proxy)
+          console.log("🚨 BEFORE SWAP BLOCK");
+
+          console.log("🚨 JUST BEFORE TRY LINE");
+
+          console.log("🚨 TRY ABOUT TO START");
+          
           try {
             console.log("🚨 ENTERED SWAP BLOCK");
             
