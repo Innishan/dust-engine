@@ -1170,6 +1170,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         let batchTotalValue = 0;
         
         for (const token of validTokens) {
+          let amount: bigint;
+          
           try {
             // 🚫 Skip very small tokens
             if (token.valueUsd < 0.05) {
@@ -1207,8 +1209,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
  
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
             
-            let amount: bigint;
-
             try {
               if (typeof token.balance === "bigint") {
                 // ✅ Already correct format
@@ -1319,26 +1319,22 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         const approvedTokens = new Set<string>();
 
         for (const token of validTokens) {
+          let amount: bigint;        
+
           try {
             addLog(`🔄 Swapping ${token.symbol}...`);        
             addLog(`PROCESSING ${token.symbol}...`);
 
-            // 🔥 MOVE AMOUNT LOGIC HERE
-            let amount: bigint;
-
             try {
               if (typeof token.balance === "bigint") {
-              // ✅ Already correct format
               amount = token.balance;
             } else if (
               typeof token.balance === "string" &&
               token.balance.length > 15 &&
               !token.balance.includes(".")
             ) {
-              // ✅ Large integer string (wei)
               amount = BigInt(token.balance);
             } else {
-              // ✅ Human readable (like "1.23")
               amount = parseUnits(
                 token.balance.toString(),
                 token.decimals
