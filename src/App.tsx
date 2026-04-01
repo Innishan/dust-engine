@@ -1416,15 +1416,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
           // 2. Real Swap (Attempt via Proxy)
           try {
-            console.log("🚨 BEFORE setStep");
-
-            setStep('swapping');
+            console.log("🚨 ENTERED SWAP BLOCK");
             
-            console.log("✅ AFTER setStep");
-
             let swapRes;
-
-            console.log("🚨 BEFORE INNER TRY");
 
             try {
               console.log("🚨 REACHED BEFORE SWAP API");
