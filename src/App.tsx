@@ -1196,7 +1196,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 data: encodeFunctionData({
                   abi: ERC20_ABI,
                   functionName: 'approve',
-                  args: [ONE_INCH_ROUTER, token.balance]
+                  args: [ONE_INCH_ROUTER, amount]
                 })
               });
 
@@ -1207,7 +1207,27 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
  
             addLog(`FETCHING SWAP DATA FOR ${token.symbol}...`);
             
-            const amount = BigInt(token.balance);
+            let amount: bigint;
+
+            try {
+              // If already bigint-like string
+              if (
+                typeof token.balance === "string" &&
+                token.balance.length > 15 &&
+                !token.balance.includes(".")
+              ) {
+                amount = BigInt(token.balance);
+              } else {
+                // If human readable (like "1.23")
+                amount = parseUnits(
+                  token.balance.toString(),
+                  token.decimals
+                );
+              }
+            } catch (e) {
+              console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
+              continue;
+            }
 
             if (amount <= 0n) {
               console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
@@ -1221,13 +1241,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               approvedTokens.add(token.address);
             }
 
-            const rawAmount = BigInt(token.balance);
-            
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
                 dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                amount: rawAmount.toString(),
+                amount: amount.toString(),
                 from: address,
                 slippage: 3,
                 disableEstimate: true
@@ -1312,19 +1330,16 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [address as Address, ONE_INCH_ROUTER],
             });
 
-            if (allowance < token.balance) {
-              if (!approvedTokens.has(token.address)) {
-                addLog(`🟡 Approving ${token.symbol}...`);
-                approvedTokens.add(token.address);
-              }
-
+            if (allowance < amount) {
+              addLog(`APPROVING ${token.symbol} FOR 1INCH...`);
+              
               const approveHash = await writeContractAsync({
                 account: address as Address,
                 chain: base,
                 address: token.address,
                 abi: ERC20_ABI,
                 functionName: 'approve',
-                args: [ONE_INCH_ROUTER, token.balance],
+                args: [ONE_INCH_ROUTER, amount]
               });
 
               addLog(`APPROVE TX SENT: ${approveHash.slice(0, 10)}...`);
@@ -1344,15 +1359,32 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
           // 2. Real Swap (Attempt via Proxy)
           setStep('swapping');
-          try {
-            const amount = BigInt(token.balance);
+          let amount: bigint;
+
+            try {
+              // If already bigint-like string
+              if (
+                typeof token.balance === "string" &&
+                token.balance.length > 15 &&
+                !token.balance.includes(".")
+              ) {
+                amount = BigInt(token.balance);
+              } else {
+                // If human readable (like "1.23")
+                amount = parseUnits(
+                  token.balance.toString(),
+                  token.decimals
+                );
+              }
+            } catch (e) {
+              console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
+              continue;
+            }
 
             if (amount <= 0n) {
               console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
               continue;
             }
-
-            const rawAmount = BigInt(token.balance);
             
             let swapRes;
 
@@ -1361,7 +1393,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 params: {
                   src: token.address,
                   dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                  amount: rawAmount.toString(),
+                  amount: amount.toString(),
                   from: address,
                   slippage: 3,
                   disableEstimate: true
