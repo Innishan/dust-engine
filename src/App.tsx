@@ -1373,7 +1373,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             continue;
           }
           
-
           // 2. Real Swap (Attempt via Proxy)
           console.log("🚨 BEFORE SWAP BLOCK");
 
@@ -1463,61 +1462,25 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               addLog(`❌ SWAP FAILED FOR ${token.symbol}`);
             }
 
+            await new Promise(r => setTimeout(r, 1500));
+
           } catch (err: any) {
             console.log("❌ SWAP ERROR:", err?.response?.data || err.message);
             addLog(`❌ Swap failed for ${token.symbol}`);
             continue;
           }
 
-            if (swapRes.data?.tx) {
-              addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
-              
-              // ✅ DO NOT re-check old allowance here
-              addLog(`✅ Proceeding to swap ${token.symbol}`);
-              
-              console.log("Swap TX Data:", swapRes.data.tx);
-              
-              console.log("🧪 SWAP TX DEBUG:", {
-                to: swapRes.data.tx.to,
-                data: swapRes.data.tx.data,
-                value: swapRes.data.tx.value,
-                gas: swapRes.data.tx.gas,
-              });
+        }
+        
+        // ✅ ADD THIS BLOCK HERE
+        if (successCount > 0) {
+          addLog(`🎉 Swap Completed: ${successCount} tokens swapped`);
 
-              const tx = swapRes.data.tx;
-
-              const swapHash = await (window as any).ethereum.request({
-                method: "eth_sendTransaction",
-                params: [{
-                  from: address,
-                  to: tx.to,
-                  data: tx.data,
-                  value: `0x${BigInt(tx.value || '0').toString(16)}`,
-                  gas: `0x${BigInt(tx.gas || '1500000').toString(16)}`
-                }]
-              });              
-              
-              addLog(`SWAP TX SENT: ${swapHash.slice(0, 10)}...`);
-              addLog("WAITING FOR SWAP CONFIRMATION...");
-              const receipt = await publicClient?.waitForTransactionReceipt({ hash: swapHash });
-              
-              if (receipt?.status === 'success') {
-                addLog(`SWAP CONFIRMED FOR ${token.symbol}.`);
-                successCount++;
-                actualSwappedValue += token.valueUsd;
-                successfulTokenAddresses.push(token.address);
-              } else {
-                addLog(`SWAP REVERTED ON-CHAIN FOR ${token.symbol}. CHECK GAS OR SLIPPAGE.`);
-              }
-            } else {
-              addLog(`SWAP DATA UNAVAILABLE FOR ${token.symbol} (SIMULATING)`);
-              await new Promise(r => setTimeout(r, 1000));
-              // For simulation, we'll count it as success for the UI demo if needed, 
-              // but ideally only real transactions count.
-              // successCount++; 
-              // actualSwappedValue += token.valueUsd;
-              // successfulTokenAddresses.push(token.address);
-            }
+          alert(
+            `✅ Swap completed successfully!\n` +
+            `Swapped ${successCount} tokens\n` +
+            `Total Value: $${actualSwappedValue.toFixed(2)}`
+          );
         }
       }
       
@@ -1544,7 +1507,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         addLog(`UI UPDATED: ${successCount} ASSETS REMOVED`);
       } else {
         addLog("NO TOKENS WERE SUCCESSFULLY COMPRESSED. CHECK LOGS FOR ERRORS.");
-      }
+      }   
     } catch (err: any) {
       console.error(err);
       const errorDetail = err.response?.data?.description || err.response?.data?.error || err.shortMessage || err.message;
