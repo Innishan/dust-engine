@@ -1356,14 +1356,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log("FINAL AMOUNT:", amount.toString());
             console.log("🚨 CHECKPOINT AFTER AMOUNT");
 
-            if (!amount || amount === "0") {
+            if (amount <= 0n) {
               console.log("❌ SKIPPED: ZERO AMOUNT");
               continue;
             }
  
-            console.log("🚨 BEFORE SWAP BLOCK");          
-            console.log("🚨 JUST BEFORE TRY LINE");
-          
           } catch (e) {
             console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
             continue;
@@ -1376,10 +1373,38 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             continue;
           }
           
-          // 1. Check Allowance & Approve
-          try {
-            setStep('approving');
 
+          // 2. Real Swap (Attempt via Proxy)
+          console.log("🚨 BEFORE SWAP BLOCK");
+
+          try {
+            console.log("🚨 ENTERED SWAP BLOCK");
+
+            // 1️⃣ GET SWAP QUOTE FIRST (IMPORTANT)
+            const swapRes = await axios.get('/api/swap/quote', {
+              params: {
+                src: token.address,
+                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                amount: amount.toString(),
+                from: address,
+                slippage: 3,
+              }
+            });
+
+            console.log("🔥 SWAP RESPONSE:", swapRes.data);
+
+            // ❗ VALIDATION
+            if (!swapRes.data || !swapRes.data.tx) {
+              console.log("❌ INVALID SWAP RESPONSE");
+              addLog(`❌ No route for ${token.symbol}`);
+              continue;
+            }
+
+            const spender = swapRes.data.approvalAddress;
+
+            console.log("🧪 SPENDER:", spender);
+
+            // 2️⃣ NOW CHECK ALLOWANCE (AFTER spender exists)
             const allowance = await publicClient.readContract({
               address: token.address,
               abi: ERC20_ABI,
@@ -1388,8 +1413,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             });
 
             if (allowance < amount) {
-              addLog(`APPROVING ${token.symbol} FOR 1INCH...`);
-    
+              addLog(`APPROVING ${token.symbol}...`);
+
               const approveHash = await writeContractAsync({
                 account: address as Address,
                 chain: base,
@@ -1406,59 +1431,43 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               addLog(`${token.symbol} ALREADY APPROVED`);
             }
 
-          } catch (approveErr: any) {
-            if (approveErr.message?.includes('User rejected')) {
-              addLog(`USER REJECTED ${token.symbol} APPROVAL`);
-              continue;
+            // 3️⃣ EXECUTE SWAP
+            addLog(`EXECUTING SWAP FOR ${token.symbol}...`);
+
+            const tx = swapRes.data.tx;
+
+            const swapHash = await (window as any).ethereum.request({
+              method: "eth_sendTransaction",
+              params: [{
+                from: address,
+                to: tx.to,
+                data: tx.data,
+                value: `0x${BigInt(tx.value || '0').toString(16)}`,
+                gas: `0x${BigInt(tx.gas || '1500000').toString(16)}`
+              }]
+            });
+
+            addLog(`SWAP TX SENT: ${swapHash.slice(0, 10)}...`);
+            addLog("WAITING FOR SWAP CONFIRMATION...");
+
+            const receipt = await publicClient?.waitForTransactionReceipt({
+              hash: swapHash
+            });
+
+            if (receipt?.status === 'success') {
+              addLog(`SWAP CONFIRMED FOR ${token.symbol}`);
+              successCount++;
+              actualSwappedValue += token.valueUsd;
+              successfulTokenAddresses.push(token.address);
+            } else {
+              addLog(`❌ SWAP FAILED FOR ${token.symbol}`);
             }
-            addLog(`APPROVAL FAILED FOR ${token.symbol}: ${approveErr.message}`);
+
+          } catch (err: any) {
+            console.log("❌ SWAP ERROR:", err?.response?.data || err.message);
+            addLog(`❌ Swap failed for ${token.symbol}`);
             continue;
           }
-
-          // 2. Real Swap (Attempt via Proxy)
-          console.log("🚨 BEFORE SWAP BLOCK");
-
-          console.log("🚨 JUST BEFORE TRY LINE");
-
-          console.log("🚨 TRY ABOUT TO START");
-          
-          try {
-            console.log("🚨 ENTERED SWAP BLOCK");
-            
-            let swapRes;
-
-            try {
-              console.log("🚨 REACHED BEFORE SWAP API");
-              swapRes = await axios.get('/api/swap/quote', {
-                params: {
-                  src: token.address,
-                  dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-                  amount: amount.toString(),
-                  from: address,
-                  slippage: 3,
-                }
-              });
-
-              console.log("🔥 SWAP RESPONSE:", swapRes.data);
-
-              // ❗ VALIDATION (VERY IMPORTANT)
-              if (!swapRes.data || !swapRes.data.tx) {
-                console.log("❌ INVALID SWAP RESPONSE");
-                addLog(`❌ No route for ${token.symbol}`);
-                continue;
-              } 
-
-              const spender = swapRes.data.approvalAddress;
-
-              console.log("🧪 TOKEN:", token.symbol);
-              console.log("🧪 AMOUNT:", amount.toString());
-              console.log("🧪 SPENDER:", spender);
-
-            } catch (err: any) {
-              console.log("❌ SWAP API ERROR:", err.response?.data || err.message);
-              addLog(`❌ Swap failed for ${token.symbol}`);
-              continue;
-            }
 
             if (swapRes.data?.tx) {
               addLog(`EXECUTING 1INCH SWAP FOR ${token.symbol}...`);
@@ -1509,11 +1518,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               // actualSwappedValue += token.valueUsd;
               // successfulTokenAddresses.push(token.address);
             }
-          } catch (swapErr: any) {
-            const errorMsg = swapErr.response?.data?.description || swapErr.response?.data?.error || swapErr.message;
-            addLog(`SWAP FAILED FOR ${token.symbol}: ${errorMsg}`);
-            addLog("SKIPPING TO NEXT TOKEN...");
-          }
         }
       }
       
