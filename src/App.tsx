@@ -1474,7 +1474,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log("📦 BATCH ITEM:", {
               token: token.symbol,
               amount: amount.toString(),
-              router: tx.to
             });
 
             successCount++;
@@ -1516,7 +1515,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [
                 tokensArr,
                 amountsArr,
-                [],
                 targetsArr,
                 valuesArr,
                 swapDataArr
@@ -1533,6 +1531,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
               // ✅ IMPORTANT: only clear AFTER success
               setTokens([]);   // or your state reset function
+              
+              setStep("success");
 
             } else {
               addLog("❌ Transaction reverted");
@@ -1540,13 +1540,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
           } catch (err) {
             console.error("❌ Contract failed:", err);
+            
             if (err?.name === "UserRejectedRequestError") {
               addLog("❌ User rejected transaction");
             } else {
               addLog("❌ Contract execution failed");
             }
-
-            console.error("❌ Contract failed:", err);
+            setStep("error");
           }
         }
 
