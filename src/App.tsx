@@ -39,6 +39,25 @@ import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+// 🔥 Dust Engine Contract
+const DUST_ENGINE_ADDRESS = "0x9cF95E950e0cA0a264FB49847b2435c099494167";
+
+const DUST_ENGINE_ABI = [
+  {
+    name: "cleanDust",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokens", type: "address[]" },
+      { name: "amounts", type: "uint256[]" },
+      { name: "permitSignatures", type: "bytes[]" },
+      { name: "router", type: "address" },
+      { name: "swapData", type: "bytes[]" }
+    ],
+    outputs: []
+  }
+];
+
 // --- Utility ---
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1326,6 +1345,12 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       } else {
         // Fallback to sequential for standard wallets
         
+        // 🔥 NEW: Contract batch arrays
+        const tokensArr: string[] = [];
+        const amountsArr: bigint[] = [];
+        const swapDataArr: string[] = [];
+        const routerArr: string[] = [];
+
         const approvedTokens = new Set<string>();
 
         for (const token of validTokens) {
@@ -1430,28 +1455,25 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               addLog(`${token.symbol} ALREADY APPROVED`);
             }
 
-            // 3️⃣ EXECUTE SWAP
-            addLog(`EXECUTING SWAP FOR ${token.symbol}...`);
+            // 🔥 PREPARE FOR CONTRACT (NO EXECUTION)
+            addLog(`📦 Adding ${token.symbol} to batch`);
 
             const tx = swapRes.data.tx;
 
-            const swapHash = await (window as any).ethereum.request({
-              method: "eth_sendTransaction",
-              params: [{
-                from: address,
-                to: tx.to,
-                data: tx.data,
-                value: `0x${BigInt(tx.value || '0').toString(16)}`,
-                gas: `0x${BigInt(tx.gas || '1500000').toString(16)}`
-              }]
+            tokensArr.push(token.address);
+            amountsArr.push(amount);
+            swapDataArr.push(tx.data);
+            routerArr.push(tx.to);
+
+            console.log("📦 BATCH ITEM:", {
+              token: token.symbol,
+              amount: amount.toString(),
+              router: tx.to
             });
 
-            addLog(`SWAP TX SENT: ${swapHash.slice(0, 10)}...`);
-            addLog("WAITING FOR SWAP CONFIRMATION...");
-
-            const receipt = await publicClient?.waitForTransactionReceipt({
-              hash: swapHash
-            });
+            successCount++;
+            actualSwappedValue += token.valueUsd;
+            successfulTokenAddresses.push(token.address);
 
             if (receipt?.status === 'success') {
               addLog(`SWAP CONFIRMED FOR ${token.symbol}`);
@@ -1472,6 +1494,42 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
         }
         
+        // 🚀 EXECUTE CONTRACT BATCH
+        if (tokensArr.length > 0) {
+          try {
+            addLog("🚀 Executing via contract...");
+            console.log("🚀 FINAL BATCH:", {
+              tokensArr,
+              amountsArr,
+              swapDataArr,
+              routerArr
+            });
+
+            const hash = await writeContractAsync({
+              address: DUST_ENGINE_ADDRESS,
+              abi: DUST_ENGINE_ABI,
+              functionName: "cleanDust",
+              args: [
+                tokensArr,
+                amountsArr,
+                [], // permit signatures (next step)
+                routerArr[0], // using first router (safe for now)
+                swapDataArr
+              ]
+            });
+
+            addLog(`📤 TX SENT: ${hash.slice(0, 10)}...`);
+
+            await publicClient.waitForTransactionReceipt({ hash });
+
+            addLog("✅ Contract swap completed");
+
+          } catch (err) {
+            console.error("❌ Contract failed:", err);
+            addLog("❌ Contract failed — fallback coming next step");
+          }
+        }
+
         // ✅ ADD THIS BLOCK HERE
         if (successCount > 0) {
           addLog(`🎉 Swap Completed: ${successCount} tokens swapped`);
