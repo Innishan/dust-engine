@@ -1348,8 +1348,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         // 🔥 NEW: Contract batch arrays
         const tokensArr: string[] = [];
         const amountsArr: bigint[] = [];
-        const swapDataArr: string[] = [];
-        const routerArr: string[] = [];
+
+        const targetsArr: `0x${string}`[] = [];
+        const valuesArr: bigint[] = [];
+        const swapDataArr: `0x${string}`[] = [];
 
         const approvedTokens = new Set<string>();
 
@@ -1460,10 +1462,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             const tx = swapRes.data.tx;
 
+            // ✅ REQUIRED ARRAYS FOR CONTRACT
             tokensArr.push(token.address);
             amountsArr.push(amount);
-            swapDataArr.push(tx.data);
-            routerArr.push(tx.to);
+
+            // 🔥 LIFI FORMAT (IMPORTANT)
+            targetsArr.push(tx.to as `0x${string}`);
+            valuesArr.push(BigInt(tx.value || "0"));
+            swapDataArr.push(tx.data as `0x${string}`);
 
             console.log("📦 BATCH ITEM:", {
               token: token.symbol,
@@ -1474,15 +1480,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             successCount++;
             actualSwappedValue += token.valueUsd;
             successfulTokenAddresses.push(token.address);
-
-            if (receipt?.status === 'success') {
-              addLog(`SWAP CONFIRMED FOR ${token.symbol}`);
-              successCount++;
-              actualSwappedValue += token.valueUsd;
-              successfulTokenAddresses.push(token.address);
-            } else {
-              addLog(`❌ SWAP FAILED FOR ${token.symbol}`);
-            }
 
             await new Promise(r => setTimeout(r, 1500));
 
@@ -1498,13 +1495,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         if (tokensArr.length > 0) {
           try {
             addLog("🚀 Executing via contract...");
+            console.log("TOKENS:", tokensArr);
+            console.log("AMOUNTS:", amountsArr);
+            console.log("TARGETS:", targetsArr);
+            console.log("VALUES:", valuesArr);
+            console.log("DATA SAMPLE:", swapDataArr[0]);            
+
             console.log("🚀 FINAL BATCH:", {
               tokensArr,
               amountsArr,
-              swapDataArr,
-              routerArr
+              targetsArr,
+              valuesArr,
+              swapDataArr
             });
-
+ 
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
@@ -1512,21 +1516,37 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [
                 tokensArr,
                 amountsArr,
-                [], // permit signatures (next step)
-                routerArr[0], // using first router (safe for now)
+                [],
+                targetsArr,
+                valuesArr,
                 swapDataArr
               ]
             });
 
             addLog(`📤 TX SENT: ${hash.slice(0, 10)}...`);
+            addLog("⏳ Waiting for confirmation...");
 
-            await publicClient.waitForTransactionReceipt({ hash });
+            const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-            addLog("✅ Contract swap completed");
+            if (receipt.status === "success") {
+              addLog("✅ Contract swap completed");
+
+              // ✅ IMPORTANT: only clear AFTER success
+              setTokens([]);   // or your state reset function
+
+            } else {
+              addLog("❌ Transaction reverted");
+            }
 
           } catch (err) {
             console.error("❌ Contract failed:", err);
-            addLog("❌ Contract failed — fallback coming next step");
+            if (err?.name === "UserRejectedRequestError") {
+              addLog("❌ User rejected transaction");
+            } else {
+              addLog("❌ Contract execution failed");
+            }
+
+            console.error("❌ Contract failed:", err);
           }
         }
 
