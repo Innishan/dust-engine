@@ -50,9 +50,9 @@ const DUST_ENGINE_ABI = [
     inputs: [
       { name: "tokens", type: "address[]" },
       { name: "amounts", type: "uint256[]" },
-      { name: "permitSignatures", type: "bytes[]" },
-      { name: "router", type: "address" },
-      { name: "swapData", type: "bytes[]" }
+      { name: "targets", type: "address[]" },
+      { name: "values", type: "uint256[]" },
+      { name: "data", type: "bytes[]" }
     ],
     outputs: []
   }
