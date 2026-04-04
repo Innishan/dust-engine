@@ -40,7 +40,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 // 🔥 Dust Engine Contract
-const DUST_ENGINE_ADDRESS = "0x9cF95E950e0cA0a264FB49847b2435c099494167";
+const DUST_ENGINE_ADDRESS = "0xE1345815fc49E2852bC3D9c7091461E7c6b1C850";
 
 const DUST_ENGINE_ABI = [
   {
