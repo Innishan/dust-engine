@@ -1462,11 +1462,26 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             const tx = swapRes.data.tx;
 
+            // 🔍 DEBUG FIRST
+            console.log("🧪 FULL TX OBJECT:", tx);
+
+            // ✅ FIX: VALIDATE BLOCK
+            if (
+              !tx.to ||
+              typeof tx.to !== "string" ||
+              !tx.to.startsWith("0x") ||
+              tx.to.length !== 42
+            ) {
+              console.log("❌ INVALID tx.to DETECTED:", tx.to);
+              addLog(`❌ Invalid route for ${token.symbol}`);
+              continue; // 🚨 SKIP THIS TOKEN
+            }
+
             // ✅ REQUIRED ARRAYS FOR CONTRACT
             tokensArr.push(token.address);
             amountsArr.push(amount);
 
-            // 🔥 LIFI FORMAT (IMPORTANT)
+            // ✅ SAFE PUSH
             targetsArr.push(tx.to as `0x${string}`);
             valuesArr.push(BigInt(tx.value || "0"));
             swapDataArr.push(tx.data as `0x${string}`);
