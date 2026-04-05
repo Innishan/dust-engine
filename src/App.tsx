@@ -1464,6 +1464,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             // 🔍 DEBUG FIRST
             console.log("🧪 FULL TX OBJECT:", tx);
+            console.log("TX TO:", tx.to);
+            console.log("TX VALUE:", tx.value);
 
             // ✅ FIX: VALIDATE BLOCK
             if (
@@ -1549,6 +1551,16 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               
               setStep("success");
 
+              if (successCount > 0) {
+                addLog(`🎉 Swap Completed: ${successCount} tokens swapped`);
+
+                alert(
+                  `✅ Swap completed successfully!\n` +
+                  `Swapped ${successCount} tokens\n` +
+                  `Total Value: $${actualSwappedValue.toFixed(2)}`
+                );
+              }
+
             } else {
               addLog("❌ Transaction reverted");
             }
@@ -1563,17 +1575,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             }
             setStep("error");
           }
-        }
-
-        // ✅ ADD THIS BLOCK HERE
-        if (successCount > 0) {
-          addLog(`🎉 Swap Completed: ${successCount} tokens swapped`);
-
-          alert(
-            `✅ Swap completed successfully!\n` +
-            `Swapped ${successCount} tokens\n` +
-            `Total Value: $${actualSwappedValue.toFixed(2)}`
-          );
         }
       }
       
