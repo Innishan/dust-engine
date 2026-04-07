@@ -1275,7 +1275,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
-                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                dst: WETH,
                 amount: amount.toString(),
                 from: address,
                 slippage: 3,
@@ -1411,7 +1411,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             const swapRes = await axios.get('/api/swap/quote', {
               params: {
                 src: token.address,
-                dst: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                dst: WETH,
                 amount: amount.toString(),
                 from: address,
                 slippage: 3,
@@ -1463,10 +1463,12 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             const tx = swapRes.data.tx;
 
-            // 🔍 DEBUG FIRST
-            console.log("🧪 FULL TX OBJECT:", tx);
-            console.log("TX TO:", tx.to);
-            console.log("TX VALUE:", tx.value);
+            // ✅ ADD THIS EXACTLY HERE
+            console.log("🧪 TX OBJECT:", {
+              to: tx.to,
+              data: tx.data,
+              value: tx.value
+            });
 
             // ✅ FIX: VALIDATE BLOCK
             if (
@@ -1512,11 +1514,24 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         if (tokensArr.length > 0) {
           try {
             addLog("🚀 Executing via contract...");
+        
+            // 🔥 ADD THIS BLOCK RIGHT HERE
+            if (tokensArr.length > 1) {
+              console.log("🧪 TEST MODE: Using only 1 token");
+
+              tokensArr.splice(1);
+              amountsArr.splice(1);
+              targetsArr.splice(1);
+              valuesArr.splice(1);
+              swapDataArr.splice(1);
+            }
+
             console.log("TOKENS:", tokensArr);
             console.log("AMOUNTS:", amountsArr);
             console.log("TARGETS:", targetsArr);
             console.log("VALUES:", valuesArr);
             console.log("DATA SAMPLE:", swapDataArr[0]);            
+            console.log("DATA LENGTH:", swapDataArr.length);
 
             console.log("🚀 FINAL BATCH:", {
               tokensArr,
