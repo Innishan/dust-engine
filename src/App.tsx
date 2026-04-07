@@ -40,7 +40,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 // 🔥 Dust Engine Contract
-const DUST_ENGINE_ADDRESS = "0xE1345815fc49E2852bC3D9c7091461E7c6b1C850";
+const DUST_ENGINE_ADDRESS = "0x82d60C6fe0497619Cb2D9DdBcD08D88ff060A12b";
 
 const DUST_ENGINE_ABI = [
   {
@@ -1463,13 +1463,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             const tx = swapRes.data.tx;
 
-            // ✅ ADD THIS EXACTLY HERE
-            console.log("🧪 TX OBJECT:", {
-              to: tx.to,
-              data: tx.data,
-              value: tx.value
-            });
-
             // ✅ FIX: VALIDATE BLOCK
             if (
               !tx.to ||
@@ -1515,17 +1508,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           try {
             addLog("🚀 Executing via contract...");
         
-            // 🔥 ADD THIS BLOCK RIGHT HERE
-            if (tokensArr.length > 1) {
-              console.log("🧪 TEST MODE: Using only 1 token");
-
-              tokensArr.splice(1);
-              amountsArr.splice(1);
-              targetsArr.splice(1);
-              valuesArr.splice(1);
-              swapDataArr.splice(1);
-            }
-
             console.log("TOKENS:", tokensArr);
             console.log("AMOUNTS:", amountsArr);
             console.log("TARGETS:", targetsArr);
