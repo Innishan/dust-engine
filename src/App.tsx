@@ -1526,6 +1526,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               swapDataArr
             });
  
+            console.log("🔥 ABI INPUT LENGTH:", DUST_ENGINE_ABI[0].inputs.length);
+
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
