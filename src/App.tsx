@@ -46,10 +46,11 @@ const DUST_ENGINE_ABI = [
   {
     name: "cleanDust",
     type: "function",
-    stateMutability: "nonpayable",
+    stateMutability: "payable",
     inputs: [
       { name: "tokens", type: "address[]" },
       { name: "amounts", type: "uint256[]" },
+      { name: "permitSignatures", type: "bytes[]" },
       { name: "targets", type: "address[]" },
       { name: "values", type: "uint256[]" },
       { name: "data", type: "bytes[]" }
@@ -1551,16 +1552,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               setTokens([]);   // or your state reset function
               
               setStep("success");
-
-              if (successCount > 0) {
-                addLog(`🎉 Swap Completed: ${successCount} tokens swapped`);
-
-                alert(
-                  `✅ Swap completed successfully!\n` +
-                  `Swapped ${successCount} tokens\n` +
-                  `Total Value: $${actualSwappedValue.toFixed(2)}`
-                );
-              }
 
             } else {
               addLog("❌ Transaction reverted");
