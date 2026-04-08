@@ -38,6 +38,7 @@ import axios from 'axios';
 import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { getQuote } from "@lifi/sdk";
 
 // 🔥 Dust Engine Contract
 const DUST_ENGINE_ADDRESS = "0x32416A874b999E98B0C064f9Af32b679Fa1bfA02";
@@ -1407,61 +1408,58 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           try {
             console.log("🚨 ENTERED SWAP BLOCK");
 
-            // 1️⃣ GET SWAP QUOTE FIRST (IMPORTANT)
-            const swapRes = await axios.get('/api/swap/quote', {
-              params: {
-                src: token.address,
-                dst: WETH,
-                amount: amount.toString(),
-                from: address,
-                slippage: 3,
-              }
+            // 🔥 LIFI QUOTE FETCH
+            const WETH = "0x4200000000000000000000000000000000000006";
+
+            const quote = await getQuote({
+              fromChain: 8453, // Base
+              toChain: 8453,
+              fromToken: token.address,
+              toToken: WETH,
+              fromAmount: amount.toString(),
+              fromAddress: address as `0x${string}`,
             });
 
-            console.log("🔥 SWAP RESPONSE:", swapRes.data);
+            // 🔍 EXTRACT STEP
+            const step = quote.steps?.[0];
 
-            // ❗ VALIDATION
-            if (!swapRes.data || !swapRes.data.tx) {
-              console.log("❌ INVALID SWAP RESPONSE");
-              addLog(`❌ No route for ${token.symbol}`);
+            if (!step || !step.transactionRequest) {
+              console.log("❌ Invalid LiFi step:", step);
+              addLog(`❌ No valid route for ${token.symbol}`);
               continue;
             }
 
-            const spender = swapRes.data.approvalAddress;
+            const tx = step.transactionRequest;
 
-            console.log("🧪 SPENDER:", spender);
+            // 🔐 LIFI APPROVAL
+            const spender = step.estimate?.approvalAddress;
 
-            // 2️⃣ NOW CHECK ALLOWANCE (AFTER spender exists)
-            const allowance = await publicClient.readContract({
-              address: token.address,
-              abi: ERC20_ABI,
-              functionName: 'allowance',
-              args: [address as Address, spender]
-            });
+            if (spender) {
+              console.log("🧪 LIFI SPENDER:", spender);
 
-            if (allowance < amount) {
-              addLog(`APPROVING ${token.symbol}...`);
-
-              const approveHash = await writeContractAsync({
-                account: address as Address,
-                chain: base,
+              const allowance = await publicClient.readContract({
                 address: token.address,
                 abi: ERC20_ABI,
-                functionName: 'approve',
-                args: [spender, amount]
+                functionName: 'allowance',
+                args: [address as `0x${string}`, spender]
               });
 
-              addLog(`APPROVE TX SENT: ${approveHash.slice(0, 10)}...`);
-              await publicClient?.waitForTransactionReceipt({ hash: approveHash });
-              addLog("APPROVAL CONFIRMED.");
-            } else {
-              addLog(`${token.symbol} ALREADY APPROVED`);
+              if (allowance < amount) {
+                addLog(`APPROVING ${token.symbol}...`);
+
+                const approveHash = await writeContractAsync({
+                  address: token.address,
+                  abi: ERC20_ABI,
+                  functionName: 'approve',
+                  args: [spender, amount]
+                });
+
+                await publicClient.waitForTransactionReceipt({ hash: approveHash });
+                addLog("APPROVAL CONFIRMED.");
+              } else {
+                addLog(`${token.symbol} ALREADY APPROVED`);
+              }
             }
-
-            // 🔥 PREPARE FOR CONTRACT (NO EXECUTION)
-            addLog(`📦 Adding ${token.symbol} to batch`);
-
-            const tx = swapRes.data.tx;
 
             // ✅ FIX: VALIDATE BLOCK
             if (
@@ -1488,10 +1486,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               token: token.symbol,
               amount: amount.toString(),
             });
-
-            successCount++;
-            actualSwappedValue += token.valueUsd;
-            successfulTokenAddresses.push(token.address);
 
             await new Promise(r => setTimeout(r, 1500));
 
