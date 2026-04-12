@@ -1411,17 +1411,36 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             // 🔥 LIFI QUOTE FETCH
             const WETH = "0x4200000000000000000000000000000000000006";
 
-            const quote = await getQuote({
-              fromChain: 8453, // Base
-              toChain: 8453,
-              fromToken: token.address,
-              toToken: WETH,
-              fromAmount: amount.toString(),
-              fromAddress: address as `0x${string}`,
-            });
+            let quote;
 
-            // 🔍 EXTRACT STEP
-            const step = quote.steps?.[0];
+            try {
+              quote = await getQuote({
+                fromChain: 8453, // Base
+                toChain: 8453,
+                fromToken: token.address,
+                toToken: WETH,
+                fromAmount: amount.toString(),
+                fromAddress: address as `0x${string}`,
+              });
+
+              console.log("🔥 LIFI FULL QUOTE:", quote);
+
+            } catch (err) {
+              console.log("❌ LIFI ERROR:", err);
+              addLog(`❌ LiFi failed for ${token.symbol}`);
+              continue;
+            }
+
+            // 🔍 VALIDATE RESPONSE
+            if (!quote) {
+              console.log("❌ LIFI QUOTE NULL");
+              continue;
+            }
+
+            console.log("📊 LIFI RAW RESPONSE:", JSON.stringify(quote, null, 2));
+
+            // 🔍 EXTRACT STEP SAFELY
+            const step = quote?.steps?.[0];
 
             if (!step || !step.transactionRequest) {
               console.log("❌ Invalid LiFi step:", step);
