@@ -1439,16 +1439,29 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             console.log("📊 LIFI RAW RESPONSE:", JSON.stringify(quote, null, 2));
 
-            // 🔍 EXTRACT STEP SAFELY
-            const step = quote?.steps?.[0];
+            // ✅ FIXED LIFI EXTRACTION
+            const step = quote.includedSteps?.[0];
 
-            if (!step || !step.transactionRequest) {
-              console.log("❌ Invalid LiFi step:", step);
+            if (!step) {
+              console.log("❌ No includedSteps:", quote);
               addLog(`❌ No valid route for ${token.symbol}`);
               continue;
             }
 
-            const tx = step.transactionRequest;
+            // 🔥 transactionRequest may not exist → build manually
+            const tx = {
+              to: quote.estimate?.approvalAddress, // router
+              data: step?.transactionRequest?.data,
+              value: step?.transactionRequest?.value || "0"
+            };
+
+            if (!tx.to || !tx.data) {
+              console.log("❌ Invalid tx constructed:", tx);
+              addLog(`❌ Invalid route for ${token.symbol}`);
+              continue;
+            }
+
+            console.log("✅ FINAL TX:", tx);
 
             // 🔐 LIFI APPROVAL
             const spender = step.estimate?.approvalAddress;
