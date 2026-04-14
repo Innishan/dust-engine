@@ -1408,22 +1408,22 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           try {
             console.log("🚨 ENTERED SWAP BLOCK");
 
-            // 🔥 LIFI QUOTE FETCH
+            // 🔥 LIFI ROUTES FETCH (FINAL FIX)
             const WETH = "0x4200000000000000000000000000000000000006";
 
-            let quote;
+            let routes;
 
             try {
-              quote = await getQuote({
-                fromChain: 8453, // Base
-                toChain: 8453,
-                fromToken: token.address,
-                toToken: WETH,
+              routes = await getRoutes({
+                fromChainId: 8453,
+                toChainId: 8453,
+                fromTokenAddress: token.address,
+                toTokenAddress: WETH,
                 fromAmount: amount.toString(),
                 fromAddress: address as `0x${string}`,
               });
 
-              console.log("🔥 LIFI FULL QUOTE:", quote);
+              console.log("🔥 LIFI ROUTES:", routes);
 
             } catch (err) {
               console.log("❌ LIFI ERROR:", err);
@@ -1431,31 +1431,20 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
 
-            // 🔍 VALIDATE RESPONSE
-            if (!quote) {
-              console.log("❌ LIFI QUOTE NULL");
-              continue;
-            }
-
-            console.log("📊 LIFI RAW RESPONSE:", JSON.stringify(quote, null, 2));
-
-            // ✅ FIXED LIFI EXTRACTION
-            const step = quote.includedSteps?.[0];
-
-            if (!step) {
-              console.log("❌ No includedSteps:", quote);
+            // ✅ VALIDATE RESPONSE
+            if (!routes || !routes.routes?.length) {
+              console.log("❌ No routes found:", routes);
               addLog(`❌ No valid route for ${token.symbol}`);
               continue;
             }
 
-            // 🔥 transactionRequest may not exist → build manually
-            const tx = {
-              to: quote.estimate?.approvalAddress, // router
-              data: step?.transactionRequest?.data,
-              value: step?.transactionRequest?.value || "0"
-            };
+            // ✅ EXTRACT TX
+            const route = routes.routes[0];
+            const step = route.steps?.[0];
+            const tx = step?.transactionRequest;
 
-            if (!tx.to || !tx.data) {
+            // ✅ FINAL VALIDATION
+            if (!tx || !tx.to || !tx.data) {
               console.log("❌ Invalid tx constructed:", tx);
               addLog(`❌ Invalid route for ${token.symbol}`);
               continue;
