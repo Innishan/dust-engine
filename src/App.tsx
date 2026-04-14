@@ -38,7 +38,7 @@ import axios from 'axios';
 import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { getQuote, getRoutes } from "@lifi/sdk";
+import { getRoutes, getStepTransaction } from "@lifi/sdk";
 
 // 🔥 Dust Engine Contract
 const DUST_ENGINE_ADDRESS = "0x32416A874b999E98B0C064f9Af32b679Fa1bfA02";
@@ -1438,10 +1438,19 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
 
-            // ✅ EXTRACT TX
+            // ✅ EXTRACT ROUTE
             const route = routes.routes[0];
             const step = route.steps?.[0];
-            const tx = step?.transactionRequest;
+
+            if (!step) {
+              console.log("❌ No step found:", route);
+              continue;
+            }
+
+            // 🔥 THIS IS THE MISSING PIECE
+            const stepTx = await getStepTransaction(step);
+
+            const tx = stepTx?.transactionRequest;
 
             // ✅ FINAL VALIDATION
             if (!tx || !tx.to || !tx.data) {
