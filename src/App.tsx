@@ -1471,7 +1471,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 address: token.address,
                 abi: ERC20_ABI,
                 functionName: 'allowance',
-                args: [address as `0x${string}`, spender]
+                args: [address as `0x${string}`, DUST_ENGINE_ADDRESS]
               });
 
               if (allowance < amount) {
@@ -1481,9 +1481,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                   address: token.address,
                   abi: ERC20_ABI,
                   functionName: 'approve',
-                  args: [spender, amount]
+                  args: [DUST_ENGINE_ADDRESS, amount]
                 });
-
+                
                 await publicClient.waitForTransactionReceipt({ hash: approveHash });
                 addLog("APPROVAL CONFIRMED.");
               } else {
