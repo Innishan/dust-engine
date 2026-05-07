@@ -234,13 +234,14 @@ async function startServer() {
   console.log(`Serving static files from: ${distPath}`);
   app.use(express.static(distPath));
 
-  app.use(
-  "/.well-known",
-  express.static(path.join(__dirname, "public/.well-known"))
-  );
+  app.use("/.well-known", express.static(path.join(__dirname, "public/.well-known")));
 
   app.post('/api/webhook', (req, res) => {
     console.log('Farcaster webhook received');
+    res.status(200).json({ success: true });
+  });
+
+  app.get('/api/webhook', (req, res) => {
     res.status(200).json({ success: true });
   });
 
