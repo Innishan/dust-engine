@@ -234,6 +234,11 @@ async function startServer() {
   console.log(`Serving static files from: ${distPath}`);
   app.use(express.static(distPath));
 
+  app.use(
+  "/.well-known",
+  express.static(path.join(__dirname, "public/.well-known"))
+  );
+
   // Catch-all route - serve index.html for client-side routing
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) {
