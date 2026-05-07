@@ -1,7 +1,7 @@
 {
   "frame": {
     "name": "Dust Engine",
-    "version": "1",
+    "version": "next"
     "iconUrl": "https://dustengine.xyz/preview1.png",
     "homeUrl": "https://dustengine.xyz/app",
     "imageUrl": "https://dustengine.xyz/preview1.png",
@@ -13,6 +13,7 @@
     "primaryCategory": "finance",
     "tagline": "Clean your wallet instantly"
     "webhookUrl": "https://dustengine.xyz/api/webhook"
+    "launchFrameUrl": "https://dustengine.xyz"
   },
   "accountAssociation": {
     "header": "eyJmaWQiOjI4NTc3ODgsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHhhYTZjMkIyNmI2MTRGRjhlZDFBNTFCMmJDYjE2MjQyQjFGQTYwNTZiIn0",
