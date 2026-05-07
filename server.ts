@@ -239,6 +239,11 @@ async function startServer() {
   express.static(path.join(__dirname, "public/.well-known"))
   );
 
+  app.post('/api/webhook', (req, res) => {
+    console.log('Farcaster webhook received');
+    res.status(200).json({ success: true });
+  });
+
   // Catch-all route - serve index.html for client-side routing
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) {
