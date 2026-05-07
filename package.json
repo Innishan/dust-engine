@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@farcaster/miniapp-sdk": "^0.3.0",
     "@google/genai": "^1.29.0",
     "@lifi/sdk": "^3.16.3",
     "@tailwindcss/postcss": "^4.2.1",
