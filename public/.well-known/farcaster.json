@@ -1,7 +1,7 @@
 {
   "frame": {
     "name": "Dust Engine",
-    "version": "next"
+    "version": "next",
     "iconUrl": "https://dustengine.xyz/preview1.png",
     "homeUrl": "https://dustengine.xyz",
     "imageUrl": "https://dustengine.xyz/preview1.png",
@@ -11,8 +11,8 @@
     "subtitle": "Clean your dust tokens",
     "description": "Convert small leftover tokens into ETH instantly.",
     "primaryCategory": "finance",
-    "tagline": "Clean your wallet instantly"
-    "webhookUrl": "https://dustengine.xyz/api/webhook"
+    "tagline": "Clean your wallet instantly",
+    "webhookUrl": "https://dustengine.xyz/api/webhook",
     "launchFrameUrl": "https://dustengine.xyz"
   },
   "accountAssociation": {
