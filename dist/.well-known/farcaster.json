@@ -1,12 +1,12 @@
 {
   "frame": {
     "name": "Dust Engine",
-    "version": "next",
-    "iconUrl": "https://dustengine.xyz/preview1.png",
+    "version": "1",
+    "iconUrl": "https://dustengine.xyz/logo.png",
     "homeUrl": "https://dustengine.xyz",
-    "imageUrl": "https://dustengine.xyz/preview1.png",
+    "imageUrl": "https://dustengine.xyz/logo.png",
     "buttonTitle": "Open Dust Engine",
-    "splashImageUrl": "https://dustengine.xyz/preview1.png",
+    "splashImageUrl": "https://dustengine.xyz/logo.png",
     "splashBackgroundColor": "#000000",
     "subtitle": "Clean your dust tokens",
     "description": "Convert small leftover tokens into ETH instantly.",
