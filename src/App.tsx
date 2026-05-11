@@ -50,26 +50,6 @@ import { sdk } from "@farcaster/miniapp-sdk";
 
 sdk.actions.ready();
 
-// 🔥 Dust Engine Contract
-const DUST_ENGINE_ADDRESS = "0x32416A874b999E98B0C064f9Af32b679Fa1bfA02";
-
-const DUST_ENGINE_ABI = [
-  {
-    name: "cleanDust",
-    type: "function",
-    stateMutability: "payable",
-    inputs: [
-      { name: "tokens", type: "address[]" },
-      { name: "amounts", type: "uint256[]" },
-      { name: "permitSignatures", type: "bytes[]" },
-      { name: "targets", type: "address[]" },
-      { name: "values", type: "uint256[]" },
-      { name: "data", type: "bytes[]" }
-    ],
-    outputs: []
-  }
-];
-
 // --- Utility ---
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -143,7 +123,7 @@ export default function App() {
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <ConnectKitProvider>
-          <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
+          <div className="min-h-screen overflow-x-hidden bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
               <div className="max-w-4xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
@@ -1531,7 +1511,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               amount: amount.toString(),
             });
 
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 250));
 
           } catch (err: any) {
             console.log("❌ SWAP ERROR:", err?.response?.data || err.message);
