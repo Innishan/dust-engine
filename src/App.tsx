@@ -1617,7 +1617,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         setShowSuccess(true);
         
         // Surgically remove only successful tokens
-        setTokens(prev => prev.filter(t => !successfulTokenAddresses.includes(t.address)));
+        setTokens(prev =>
+          prev.filter(
+            t => !successfulTokenAddresses.includes(t.address.toLowerCase())
+          )
+        );
         addLog(`UI UPDATED: ${successCount} ASSETS REMOVED`);
       } else {
         addLog("NO TOKENS WERE SUCCESSFULLY COMPRESSED. CHECK LOGS FOR ERRORS.");
