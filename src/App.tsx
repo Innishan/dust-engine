@@ -33,7 +33,14 @@ import {
   Search,
   Twitter
 } from 'lucide-react';
-import { formatUnits, createPublicClient, type Address } from 'viem'
+import {
+  formatUnits,
+  createPublicClient,
+  parseUnits,
+  encodeFunctionData,
+  getContract,
+  type Address
+} from 'viem';
 import axios from 'axios';
 import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
@@ -138,7 +145,7 @@ export default function App() {
         <ConnectKitProvider>
           <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
-              <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
+              <div className="max-w-4xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
                   <div className="relative">
                     <Gear className="text-emerald-500" speed={5} />
@@ -152,7 +159,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
-                  <div className="hidden sm:flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full border border-zinc-700">
+                  <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full border border-zinc-700">
                     <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                     <span className="text-xs font-mono text-zinc-400">BASE MAINNET</span>
                   </div>
@@ -173,7 +180,7 @@ export default function App() {
 
 function ConnectButton() {
   return (
-    <div className="scale-90 origin-right max-w-[140px] sm:max-w-none overflow-hidden">
+    <div className="scale-90 sm:scale-100 origin-right max-w-[120px] sm:max-w-none overflow-hidden flex justify-end">
       <ConnectKitButton />
     </div>
   );
@@ -890,7 +897,7 @@ function EngineCore() {
             </div>
           </div>
 
-          <div className="w-48 h-48 relative flex items-center justify-center">
+          <div className="w-full max-w-[220px] h-[280px] relative flex flex-col items-center justify-center shrink-0">
             <div className="absolute inset-0 border-4 border-dashed border-zinc-800 rounded-full animate-[spin_20s_linear_infinite]" />
             <div className="relative">
               <Gear className={cn("text-zinc-700", isAnalyzing && "text-emerald-500")} speed={isAnalyzing ? 2 : 10} />
@@ -899,7 +906,7 @@ function EngineCore() {
             </div>
             
             {/* Mechanical Log Monitor */}
-            <div className="absolute -bottom-10 w-64 bg-black/80 border border-zinc-800 rounded p-2 font-mono text-[9px] text-emerald-500/80 shadow-xl overflow-hidden h-16 pointer-events-none">
+            <div className="absolute bottom-10 w-full max-w-[240px] bg-black/80 border border-zinc-800 rounded p-2 font-mono text-[9px] text-emerald-500/80 shadow-xl overflow-hidden h-16 pointer-events-none">
               <div className="flex justify-between border-b border-zinc-800 pb-1 mb-1 text-[7px] uppercase tracking-widest text-zinc-600">
                 <span>System Monitor</span>
                 <span className="animate-pulse">ONLINE</span>
@@ -914,7 +921,7 @@ function EngineCore() {
                 )}
               </div>
             </div>
-            <div className="absolute -bottom-24 flex items-center gap-4">
+            <div className="absolute bottom-0 flex items-center gap-4">
               <a href="https://x.com/enginedust" target="_blank" rel="noopener noreferrer">
                 <img src="/x-logo.svg" width="28" alt="X" />
               </a>
@@ -935,7 +942,7 @@ function EngineCore() {
             exit={{ opacity: 0, y: -20 }}
             className="space-y-4"
           >
-            <div className="flex items-center justify-between px-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-2">
               <div className="flex items-center gap-4">
                 <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-500 flex items-center gap-2">
                   <Trash2 size={14} /> {showAll ? 'All Assets' : 'Detected Dust'} ({filteredTokens.length})
@@ -995,7 +1002,7 @@ function EngineCore() {
                 <p className="text-xs text-zinc-500 uppercase font-bold tracking-tighter">Total Compression Value</p>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-black text-emerald-500">${(totalValueUsd || 0).toFixed(4)}</span>
-                  <span className="text-sm font-mono text-zinc-400">≈ {((totalValueUsd || 0) / 2500).toFixed(6)} ETH</span>
+                  <span className="text-sm font-mono text-zinc-400 break-all">≈ {((totalValueUsd || 0) / 2500).toFixed(6)} ETH</span>
                 </div>
                 {unpricedCount > 0 && (
                   <p className="text-[10px] text-zinc-500 italic">
@@ -1069,7 +1076,7 @@ function TokenRow({ token, onToggle }: { token: TokenInfo; onToggle: () => void 
         {token.selected && <CheckCircle2 size={16} strokeWidth={3} />}
       </div>
 
-      <div className="flex-1 min-w-0 overflow-hidden">
+      <div className="flex-1 min-w-0 overflow-hidden w-0">
         <div className="flex items-center gap-2">
           <span className="font-bold text-zinc-100 truncate">{token.symbol}</span>
           {token.isVerified && (
@@ -1080,7 +1087,11 @@ function TokenRow({ token, onToggle }: { token: TokenInfo; onToggle: () => void 
       </div>
 
       <div className="text-right">
-        <p className="font-bold text-zinc-200">{token.formattedBalance}</p>
+        <p className="font-bold text-zinc-200 truncate max-w-[110px] sm:max-w-none">
+          {Number(token.formattedBalance).toLocaleString(undefined, {
+            maximumFractionDigits: 6
+          })}
+        </p>
         <p className={cn(
           "text-xs font-medium",
           token.valueUsd > 0 ? "text-emerald-500/80" : "text-zinc-500 italic"
