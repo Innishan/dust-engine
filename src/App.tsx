@@ -249,7 +249,6 @@ function EngineCore() {
     }
 
     setIsAnalyzing(true);
-    setTokens([]);
     addLog(`SCANNING: ${addressToScan.slice(0, 6)}...${addressToScan.slice(-4)}`);
 
     try {
@@ -624,6 +623,9 @@ function EngineCore() {
         const addrLower = t.address?.toLowerCase();
         
         if (!addrLower) continue;
+
+        // ❌ Ignore WETH from dust detection
+        if (addrLower === WETH.toLowerCase()) continue;
 
         const price = prices[addrLower] || fallbackPrices[addrLower] || 0;
         const valueUsd = (parseFloat(formatted) || 0) * price;
@@ -1565,9 +1567,18 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             if (receipt.status === "success") {
               addLog("✅ Contract swap completed");
 
-              // ✅ IMPORTANT: only clear AFTER success
-              setTokens([]);   // or your state reset function
-              
+              // ✅ Track successful swaps
+              successCount = tokensArr.length;
+
+              actualSwappedValue = validTokens.reduce(
+                (acc, t) => acc + (t.valueUsd || 0),
+                0
+              );
+
+              successfulTokenAddresses.push(
+                ...tokensArr.map(t => t.toLowerCase())
+              );
+
               setStep("success");
 
             } else {
