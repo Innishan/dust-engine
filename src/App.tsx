@@ -1178,15 +1178,31 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       
       // Try EIP-5792 Batching (Smart Wallets like Coinbase)
       let batchSupported = false;
-      try {
-        // Check if wallet supports batching
-        const capabilities = await (window as any).ethereum?.request({
-          method: 'wallet_getCapabilities',
-          params: [address]
-        });
-        batchSupported = !!capabilities?.[base.id.toString()]?.atomicBatch?.supported;
-      } catch (e) { console.warn("Batching not supported", e); }
 
+      const isMetaMask =
+        (window as any).ethereum?.isMetaMask;
+
+      if (!isMetaMask) {
+        try {
+          const capabilities =
+            await (window as any).ethereum?.request({
+              method: 'wallet_getCapabilities',
+              params: [address]
+            });
+
+          batchSupported =
+            !!capabilities?.[
+              base.id.toString()
+            ]?.atomicBatch?.supported;
+
+        } catch (e) {
+          console.warn(
+            "Batching not supported",
+            e
+          );
+        }
+      }
+ 
       if (false) {
         addLog("SMART WALLET DETECTED: PREPARING ATOMIC BATCH...");
         
@@ -1391,7 +1407,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             continue;
           }
 
-          amount = (amount * 95n) / 100n;
+          amount = (amount * 98n) / 100n;
 
           if (amount <= 0n) {
             console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
