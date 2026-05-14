@@ -1112,6 +1112,17 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
     
     console.log("🚀 handleSwap triggered");
     console.log("TOKENS:", tokens);
+    
+    tokens.forEach((t, i) => {
+      console.log("TOKEN DEBUG", i, {
+        symbol: t.symbol,
+        valueUsd: t.valueUsd,
+        balance: t.balance,
+        balanceType: typeof t.balance,
+        selected: t.selected
+      });
+    });
+    
     console.log("ADDRESS:", address);
 
     if (e) {
