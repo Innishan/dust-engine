@@ -1142,10 +1142,15 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
       const selectedTokens = tokens.filter(t => t.selected);
 
       // 🔥 ADD THIS RIGHT BELOW
-      const validTokens = selectedTokens.filter(
-        t => t.valueUsd >= 0.05 && t.balance > 0
-      );
+      const validTokens = selectedTokens.filter(t => {
+        const balance =
+          typeof t.balance === "bigint"
+            ? t.balance
+            : BigInt(t.balance || 0);
 
+        return t.valueUsd >= 0.05 && balance > 0n;
+      });
+      
       console.log("✅ VALID TOKENS:", validTokens);      
       console.log("✅ SELECTED TOKENS:", selectedTokens);
 
