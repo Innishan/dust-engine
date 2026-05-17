@@ -1159,7 +1159,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             ? t.balance
             : BigInt(t.balance || 0);
 
-        return t.valueUsd >= 0.05 && balance > 0n;
+        return t.valueUsd >= 0.01 && balance > 0n;
       });
       
       console.log("✅ VALID TOKENS:", validTokens);      
