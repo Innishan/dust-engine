@@ -20,6 +20,16 @@ export const DUST_ENGINE_ABI = [
         "type": "bytes[]"
       },
       {
+        "internalType": "uint256[]",
+        "name": "nonces",
+        "type": "uint256[]"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "deadlines",
+        "type": "uint256[]"
+      },
+      {
         "internalType": "address[]",
         "name": "targets",
         "type": "address[]"
@@ -180,4 +190,4 @@ export const DUST_ENGINE_ABI = [
     "stateMutability": "view",
     "type": "function"
   }
-];
+]

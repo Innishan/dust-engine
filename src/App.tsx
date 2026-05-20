@@ -10,7 +10,8 @@ import {
   usePublicClient,
   useSwitchChain,
   useWaitForTransactionReceipt,
-  useSendTransaction
+  useSendTransaction,
+  useSignTypedData
 } from 'wagmi';
 import { base } from 'wagmi/chains';
 import { injected, coinbaseWallet } from 'wagmi/connectors';
@@ -39,8 +40,12 @@ import {
   parseUnits,
   encodeFunctionData,
   getContract,
-  type Address
+  type Address,
+  maxUint256
 } from 'viem';
+import {
+  PERMIT2_ADDRESS
+} from "@uniswap/permit2-sdk";
 import axios from 'axios';
 import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
 import { clsx, type ClassValue } from 'clsx';
@@ -73,6 +78,36 @@ const ERC20_ABI = [
   { name: 'allowance', type: 'function', stateMutability: 'view', inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { name: 'symbol', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
   { name: 'decimals', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+] as const;
+
+const PERMIT2_ABI = [
+  {
+    name: "allowance",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "user", type: "address" },
+      { name: "token", type: "address" },
+      { name: "spender", type: "address" }
+    ],
+    outputs: [
+      { name: "amount", type: "uint160" },
+      { name: "expiration", type: "uint48" },
+      { name: "nonce", type: "uint48" }
+    ]
+  },
+  {
+    name: "approve",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint160" },
+      { name: "expiration", type: "uint48" }
+    ],
+    outputs: []
+  }
 ] as const;
 
 // --- Config ---
@@ -168,6 +203,7 @@ function ConnectButton() {
 
 function EngineCore() {
   const { writeContractAsync } = useWriteContract();
+  const { signTypedDataAsync } = useSignTypedData();
   const { address, isConnected } = useAccount();
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
@@ -1379,6 +1415,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         const tokensArr: string[] = [];
         const amountsArr: bigint[] = [];
 
+        const permitSignaturesArr: `0x${string}`[] = [];
+        const noncesArr: bigint[] = [];
+        const deadlinesArr: bigint[] = [];
+
         const targetsArr: `0x${string}`[] = [];
         const valuesArr: bigint[] = [];
         const swapDataArr: `0x${string}`[] = [];
@@ -1424,6 +1464,57 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
           }
 
           amount = (amount * 98n) / 100n;
+
+          // =====================================
+          // PERMIT2 SETUP
+          // =====================================
+
+          const permitAllowance = await publicClient.readContract({
+            address: PERMIT2_ADDRESS,
+            abi: PERMIT2_ABI,
+            functionName: "allowance",
+            args: [
+              address as `0x${string}`,
+              token.address,
+              DUST_ENGINE_ADDRESS
+            ]
+          });
+
+          if (permitAllowance[0] < amount) {
+
+            addLog(`APPROVING ${token.symbol} FOR PERMIT2...`);
+
+            // first-time approval to Permit2
+            const approveHash = await writeContractAsync({
+              address: token.address,
+              abi: ERC20_ABI,
+              functionName: "approve",
+              args: [PERMIT2_ADDRESS, maxUint256]
+            });
+
+            await publicClient.waitForTransactionReceipt({
+              hash: approveHash
+            });
+
+            // approve Permit2 -> DustEngine
+            const permit2Hash = await writeContractAsync({
+              address: PERMIT2_ADDRESS,
+              abi: PERMIT2_ABI,
+              functionName: "approve",
+              args: [
+                token.address,
+                DUST_ENGINE_ADDRESS,
+                maxUint256,
+                BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30)
+              ]
+            });
+
+            await publicClient.waitForTransactionReceipt({
+              hash: permit2Hash
+            });
+
+            addLog(`PERMIT2 READY FOR ${token.symbol}`);
+          }
 
           if (amount <= 0n) {
             console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
@@ -1490,36 +1581,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             console.log("✅ FINAL TX:", tx);
 
-            // 🔐 LIFI APPROVAL
-            const spender = step.estimate?.approvalAddress;
-
-            if (spender) {
-              console.log("🧪 LIFI SPENDER:", spender);
-
-              const allowance = await publicClient.readContract({
-                address: token.address,
-                abi: ERC20_ABI,
-                functionName: 'allowance',
-                args: [address as `0x${string}`, DUST_ENGINE_ADDRESS]
-              });
-
-              if (allowance < amount) {
-                addLog(`APPROVING ${token.symbol}...`);
-
-                const approveHash = await writeContractAsync({
-                  address: token.address,
-                  abi: ERC20_ABI,
-                  functionName: 'approve',
-                  args: [DUST_ENGINE_ADDRESS, amount]
-                });
-                
-                await publicClient.waitForTransactionReceipt({ hash: approveHash });
-                addLog("APPROVAL CONFIRMED.");
-              } else {
-                addLog(`${token.symbol} ALREADY APPROVED`);
-              }
-            }
-
             // ✅ FIX: VALIDATE BLOCK
             if (
               !tx.to ||
@@ -1531,6 +1592,52 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               addLog(`❌ Invalid route for ${token.symbol}`);
               continue; // 🚨 SKIP THIS TOKEN
             }
+
+            const nonce = Number(permitAllowance[2]);
+
+            const deadline =
+              Math.floor(Date.now() / 1000) + 3600;
+
+            const domain = {
+              name: "Permit2",
+              chainId: 8453,
+              verifyingContract: PERMIT2_ADDRESS
+            };
+
+            const types = {
+              PermitTransferFrom: [
+                { name: "permitted", type: "TokenPermissions" },
+                { name: "nonce", type: "uint256" },
+                { name: "deadline", type: "uint256" }
+              ],
+              TokenPermissions: [
+                { name: "token", type: "address" },
+                { name: "amount", type: "uint256" }
+              ]
+            };
+
+            const message = {
+              permitted: {
+                token: token.address,
+                amount
+              },
+              nonce,
+              deadline
+            };
+
+            addLog(`SIGNING PERMIT FOR ${token.symbol}...`);
+
+            const signature = await signTypedDataAsync({
+              domain,
+              types,
+              primaryType: "PermitTransferFrom",
+              message
+            });
+
+            permitSignaturesArr.push(signature as `0x${string}`);
+
+            noncesArr.push(BigInt(nonce));
+            deadlinesArr.push(BigInt(deadline));
 
             // ✅ REQUIRED ARRAYS FOR CONTRACT
             tokensArr.push(token.address);
@@ -1585,7 +1692,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [
                 tokensArr,
                 amountsArr,
-                [],
+                permitSignaturesArr,
+                noncesArr,
+                deadlinesArr,
                 targetsArr,
                 valuesArr,
                 swapDataArr
