@@ -1,5 +1,5 @@
 export const DUST_ENGINE_ADDRESS =
-  "0x8Fe9688539AEaA9c56c5874d2c8894E60574c979";
+  "0xe59d15B405E9F245b409a7908d41e388A42Ecc6c";
 
 export const DUST_ENGINE_ABI = [
   {
@@ -190,4 +190,4 @@ export const DUST_ENGINE_ABI = [
     "stateMutability": "view",
     "type": "function"
   }
-]
+];

@@ -1519,7 +1519,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 fromTokenAddress: token.address,
                 toTokenAddress: WETH,
                 fromAmount: amount.toString(),
-                fromAddress: address as `0x${string}`,
+                fromAddress: DUST_ENGINE_ADDRESS,
                 toAddress: DUST_ENGINE_ADDRESS,
               });
 
