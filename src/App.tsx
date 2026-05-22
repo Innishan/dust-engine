@@ -1132,11 +1132,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'idle' | 'routing' | 'approving' | 'swapping' | 'cleaning'>('idle');
   const [currentSource, setCurrentSource] = useState<string>('');
+
   const { address, chain } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
   const { sendTransactionAsync } = useSendTransaction();
+  const { signTypedDataAsync } = useSignTypedData();
 
   const [showSuccess, setShowSuccess] = useState(false);
   const [successData, setSuccessData] = useState({ count: 0, value: 0 });
