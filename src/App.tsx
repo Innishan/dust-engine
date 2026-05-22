@@ -1504,7 +1504,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [
                 token.address,
                 DUST_ENGINE_ADDRESS,
-                maxUint256,
+                1461501637330902918203684832716283019655932542975n,
                 BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30)
               ]
             });
