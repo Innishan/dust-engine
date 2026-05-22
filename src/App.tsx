@@ -1627,6 +1627,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             addLog(`SIGNING PERMIT FOR ${token.symbol}...`);
 
+            console.log("SIGN FUNCTION:", signTypedDataAsync);
+            console.log("TYPE:", typeof signTypedDataAsync);
+
             const signature = await signTypedDataAsync({
               domain,
               types,
