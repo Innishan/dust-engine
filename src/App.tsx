@@ -1460,33 +1460,30 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue;
             }
  
+            amount = (amount * 98n) / 100n;
+
           } catch (e) {
             console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
             continue;
           }
 
-          amount = (amount * 98n) / 100n;
-
           // =====================================
           // PERMIT2 SETUP
           // =====================================
 
-          const permitAllowance = await publicClient.readContract({
-            address: PERMIT2_ADDRESS,
-            abi: PERMIT2_ABI,
+          const allowance = await publicClient.readContract({
+            address: token.address,
+            abi: ERC20_ABI,
             functionName: "allowance",
             args: [
               address as `0x${string}`,
-              token.address,
-              DUST_ENGINE_ADDRESS
+              PERMIT2_ADDRESS
             ]
           });
 
-          if (permitAllowance[0] < amount) {
+          if (allowance < amount) {
+            addLog(`APPROVING ${token.symbol}...`);
 
-            addLog(`APPROVING ${token.symbol} FOR PERMIT2...`);
-
-            // first-time approval to Permit2
             const approveHash = await writeContractAsync({
               address: token.address,
               abi: ERC20_ABI,
@@ -1497,25 +1494,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             await publicClient.waitForTransactionReceipt({
               hash: approveHash
             });
-
-            // approve Permit2 -> DustEngine
-            const permit2Hash = await writeContractAsync({
-              address: PERMIT2_ADDRESS,
-              abi: PERMIT2_ABI,
-              functionName: "approve",
-              args: [
-                token.address,
-                DUST_ENGINE_ADDRESS,
-                1461501637330902918203684832716283019655932542975n,
-                BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30)
-              ]
-            });
-
-            await publicClient.waitForTransactionReceipt({
-              hash: permit2Hash
-            });
-
-            addLog(`PERMIT2 READY FOR ${token.symbol}`);
           }
 
           if (amount <= 0n) {
