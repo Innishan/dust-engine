@@ -1573,6 +1573,17 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue; // 🚨 SKIP THIS TOKEN
             }
 
+            const permitAllowance = await publicClient.readContract({
+              address: PERMIT2_ADDRESS,
+              abi: PERMIT2_ABI,
+              functionName: "allowance",
+              args: [
+                address as `0x${string}`,
+                token.address,
+                DUST_ENGINE_ADDRESS
+              ]
+            });
+
             const nonce = Number(permitAllowance[2]);
 
             const deadline =
