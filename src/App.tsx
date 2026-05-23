@@ -1684,6 +1684,29 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log("NONCES:", noncesArr);
             console.log("DEADLINES:", deadlinesArr);
 
+            try {
+              const sim = await publicClient.simulateContract({
+                address: DUST_ENGINE_ADDRESS,
+                abi: DUST_ENGINE_ABI,
+                functionName: "cleanDust",
+                args: [
+                  tokensArr,
+                  amountsArr,
+                  permitSignaturesArr,
+                  noncesArr,
+                  deadlinesArr,
+                  targetsArr,
+                  valuesArr,
+                  swapDataArr
+                ],
+                account: address
+              });
+
+              console.log("SIMULATION OK", sim);
+            } catch (e) {
+              console.error("SIMULATION ERROR", e);
+            }
+
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
