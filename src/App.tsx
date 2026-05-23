@@ -1573,18 +1573,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue; // 🚨 SKIP THIS TOKEN
             }
 
-            const permitAllowance = await publicClient.readContract({
-              address: PERMIT2_ADDRESS,
-              abi: PERMIT2_ABI,
-              functionName: "allowance",
-              args: [
-                address as `0x${string}`,
-                token.address,
-                DUST_ENGINE_ADDRESS
-              ]
-            });
-
-            const nonce = Number(permitAllowance[2]);
+            const nonce = BigInt(
+              Math.floor(Math.random() * 1_000_000_000)
+            );
 
             const deadline =
               Math.floor(Date.now() / 1000) + 3600;
@@ -1612,7 +1603,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 token: token.address,
                 amount
               },
-              nonce,
+              nonce: nonce.toString(),
               deadline
             };
 
@@ -1630,7 +1621,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             permitSignaturesArr.push(signature as `0x${string}`);
 
-            noncesArr.push(BigInt(nonce));
+            noncesArr.push(nonce);
             deadlinesArr.push(BigInt(deadline));
 
             // ✅ REQUIRED ARRAYS FOR CONTRACT
