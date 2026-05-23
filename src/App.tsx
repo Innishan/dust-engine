@@ -1679,6 +1679,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
  
             console.log("🔥 ABI INPUT LENGTH:", DUST_ENGINE_ABI[0].inputs.length);
 
+            console.log("PERMIT SIG COUNT:", permitSignaturesArr.length);
+            console.log("PERMIT SIG SAMPLE:", permitSignaturesArr[0]);
+            console.log("NONCES:", noncesArr);
+            console.log("DEADLINES:", deadlinesArr);
+
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
