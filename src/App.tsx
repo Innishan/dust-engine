@@ -1589,6 +1589,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             const types = {
               PermitTransferFrom: [
                 { name: "permitted", type: "TokenPermissions" },
+                { name: "spender", type: "address" },
                 { name: "nonce", type: "uint256" },
                 { name: "deadline", type: "uint256" }
               ],
@@ -1603,6 +1604,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 token: token.address,
                 amount
               },
+              spender: DUST_ENGINE_ADDRESS,
               nonce: nonce.toString(),
               deadline
             };
