@@ -110,6 +110,21 @@ const PERMIT2_ABI = [
   }
 ] as const;
 
+const PERMIT2_SIGNATURE_ABI = [
+  {
+    name: "nonceBitmap",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "user", type: "address" },
+      { name: "wordPos", type: "uint256" }
+    ],
+    outputs: [
+      { name: "", type: "uint256" }
+    ]
+  }
+] as const;
+
 // --- Config ---
 const config = createConfig(
   getDefaultConfig({
@@ -1573,9 +1588,28 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue; // 🚨 SKIP THIS TOKEN
             }
 
-            const nonce = BigInt(
-              Math.floor(Math.random() * 1_000_000_000)
-            );
+            const wordPos = 0n;
+
+            const bitmap = await publicClient.readContract({
+              address: PERMIT2_ADDRESS,
+              abi: PERMIT2_SIGNATURE_ABI,
+              functionName: "nonceBitmap",
+              args: [
+                address as `0x${string}`,
+                wordPos
+              ]
+            });
+
+            let bitPos = 0n;
+
+            while (
+              bitPos < 256n &&
+              ((bitmap >> bitPos) & 1n) === 1n
+            ) {
+              bitPos++;
+            }
+
+            const nonce = (wordPos << 8n) | bitPos;
 
             const deadline =
               Math.floor(Date.now() / 1000) + 3600;
