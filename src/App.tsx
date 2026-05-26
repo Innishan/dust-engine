@@ -1630,6 +1630,11 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             tokensArr.push(token.address);
             amountsArr.push(amount);
 
+            console.log("🔥 TX OBJECT:", tx);
+            console.log("🔥 TX TO:", tx.to);
+            console.log("🔥 TX DATA:", tx.data);
+            console.log("🔥 TX VALUE:", tx.value);
+
             // ✅ SAFE PUSH
             targetsArr.push(tx.to as `0x${string}`);
             valuesArr.push(BigInt(tx.value || "0"));
