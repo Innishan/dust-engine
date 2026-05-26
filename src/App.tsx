@@ -1717,7 +1717,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             console.log("DEADLINES:", deadlinesArr);
 
             try {
-              const sim = await baseRpcClient.simulateContract({              
+              const sim = await publicClient.simulateContract({              
                 address: DUST_ENGINE_ADDRESS,
                 abi: DUST_ENGINE_ABI,
                 functionName: "cleanDust",
