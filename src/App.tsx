@@ -1765,6 +1765,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
               console.log("RECEIPT:", receipt);
               console.log("RECEIPT STATUS:", receipt.status);
+              console.log("GAS USED:", receipt.gasUsed?.toString());
+              console.log("LOGS:", receipt.logs);
+              console.log("TO:", receipt.to);
 
               if (receipt.status === "success") {
                 addLog("✅ Contract swap completed");
