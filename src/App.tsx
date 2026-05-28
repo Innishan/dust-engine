@@ -1739,46 +1739,61 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               console.error("SIMULATION ERROR", e);
             }
 
-            const hash = await writeContractAsync({
-              address: DUST_ENGINE_ADDRESS,
-              abi: DUST_ENGINE_ABI,
-              functionName: "cleanDust",
-              args: [
-                tokensArr,
-                amountsArr,
-                permitSignaturesArr,
-                noncesArr,
-                deadlinesArr,
-                targetsArr,
-                valuesArr,
-                swapDataArr
-              ]
-            });
+            try {
+              const hash = await writeContractAsync({
+                address: DUST_ENGINE_ADDRESS,
+                abi: DUST_ENGINE_ABI,
+                functionName: "cleanDust",
+                args: [
+                  tokensArr,
+                  amountsArr,
+                  permitSignaturesArr,
+                  noncesArr,
+                  deadlinesArr,
+                  targetsArr,
+                  valuesArr,
+                  swapDataArr
+                ]
+              });
 
-            addLog(`📤 TX SENT: ${hash.slice(0, 10)}...`);
-            addLog("⏳ Waiting for confirmation...");
+              console.log("TX HASH:", hash);
 
-            const receipt = await publicClient.waitForTransactionReceipt({ hash });
+              addLog(`📤 TX SENT: ${hash.slice(0, 10)}...`);
+              addLog("⏳ Waiting for confirmation...");
 
-            if (receipt.status === "success") {
-              addLog("✅ Contract swap completed");
+              const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-              // ✅ Track successful swaps
-              successCount = tokensArr.length;
+              console.log("RECEIPT:", receipt);
+              console.log("RECEIPT STATUS:", receipt.status);
 
-              actualSwappedValue = validTokens.reduce(
-                (acc, t) => acc + (t.valueUsd || 0),
-                0
-              );
+              if (receipt.status === "success") {
+                addLog("✅ Contract swap completed");
 
-              successfulTokenAddresses.push(
-                ...tokensArr.map(t => t.toLowerCase())
-              );
+                successCount = tokensArr.length;
 
-              setStep("success");
+                actualSwappedValue = validTokens.reduce(
+                  (acc, t) => acc + (t.valueUsd || 0),
+                  0
+                );
 
-            } else {
-              addLog("❌ Transaction reverted");
+                successfulTokenAddresses.push(
+                  ...tokensArr.map(t => t.toLowerCase())
+                );
+
+                setStep("success");
+
+              } else {
+                console.error("❌ RECEIPT REVERT:", receipt);
+                console.log("REVERT TX HASH:", hash);
+                addLog("❌ Transaction reverted");
+              }
+
+            } catch (err: any) {
+              console.error("❌ WRITE ERROR FULL:", err);
+              console.error("SHORT MESSAGE:", err?.shortMessage);
+              console.error("CAUSE:", err?.cause);
+              console.error("DETAILS:", err?.details);
+              console.error("RAW ERR:", JSON.stringify(err, null, 2));
             }
 
           } catch (err) {
