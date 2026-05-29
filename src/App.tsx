@@ -1767,6 +1767,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               console.log("RECEIPT STATUS:", receipt.status);
               console.log("GAS USED:", receipt.gasUsed?.toString());
               console.log("LOGS:", receipt.logs);
+              console.log(
+                "DEBUG EVENT RAW:",
+                receipt.logs.map(l => ({
+                  address: l.address,
+                  topics: l.topics
+                }))
+              );
               console.log("TO:", receipt.to);
 
               if (receipt.status === "success") {
