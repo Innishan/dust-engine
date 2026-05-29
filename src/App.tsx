@@ -1539,6 +1539,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               });
 
               console.log("🔥 LIFI ROUTES:", routes);
+              console.log(
+                "STEP DETAILS:",
+                JSON.stringify(
+                  routes.routes[0].steps[0],
+                  null,
+                  2
+                )
+              );
 
             } catch (err) {
               console.log("❌ LIFI ERROR:", err);
