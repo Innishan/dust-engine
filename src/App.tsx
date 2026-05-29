@@ -1538,8 +1538,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 toAddress: DUST_ENGINE_ADDRESS,
 
                 options: {
+                  skipPermit: true,
                   allowSwitchChain: false,
-                  skipPermit: false,
                 },
               });
 
