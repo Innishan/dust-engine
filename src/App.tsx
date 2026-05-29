@@ -1536,6 +1536,13 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 fromAmount: amount.toString(),
                 fromAddress: DUST_ENGINE_ADDRESS,
                 toAddress: DUST_ENGINE_ADDRESS,
+
+                options: {
+                  allowSwitchChain: false,
+                  skipPermit: false,
+                  bridges: [],
+                  exchanges: [],
+                },
               });
 
               console.log("🔥 LIFI ROUTES:", routes);
