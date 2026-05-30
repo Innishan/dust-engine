@@ -1534,13 +1534,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 fromTokenAddress: token.address,
                 toTokenAddress: WETH,
                 fromAmount: amount.toString(),
-                fromAddress: DUST_ENGINE_ADDRESS,
-                toAddress: DUST_ENGINE_ADDRESS,
+              
+                fromAddress: address, // USER WALLET
+                toAddress: address,   // USER WALLET
 
                 options: {
-                  bridges: {},
-                  skipPermit: true,
                   allowSwitchChain: false,
+                  skipPermit: true,
+                  bridges: [],
                 },
               });
 
