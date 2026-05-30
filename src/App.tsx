@@ -1541,7 +1541,6 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 options: {
                   allowSwitchChain: false,
                   skipPermit: true,
-                  bridges: [],
                 },
               });
 
