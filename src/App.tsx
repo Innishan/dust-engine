@@ -1442,6 +1442,27 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
         const approvedTokens = new Set<string>();
 
+        const wordPos = 0n;
+
+        const bitmap = await publicClient.readContract({
+          address: PERMIT2_ADDRESS,
+          abi: PERMIT2_SIGNATURE_ABI,
+          functionName: "nonceBitmap",
+          args: [
+            address as `0x${string}`,
+            wordPos
+          ]
+        });
+
+        let nextBitPos = 0n;
+
+        while (
+          nextBitPos < 256n &&
+          ((bitmap >> nextBitPos) & 1n) === 1n
+        ) {
+          nextBitPos++;
+        }
+
         for (const token of validTokens) {
           let amount: bigint;        
           console.log("🚀 STARTING SWAP FOR TOKEN:", token.symbol);
@@ -1602,29 +1623,9 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               continue; // 🚨 SKIP THIS TOKEN
             }
 
-            const wordPos = 0n;
-
-            const bitmap = await publicClient.readContract({
-              address: PERMIT2_ADDRESS,
-              abi: PERMIT2_SIGNATURE_ABI,
-              functionName: "nonceBitmap",
-              args: [
-                address as `0x${string}`,
-                wordPos
-              ]
-            });
-
-            let bitPos = 0n;
-
-            while (
-              bitPos < 256n &&
-              ((bitmap >> bitPos) & 1n) === 1n
-            ) {
-              bitPos++;
-            }
-
-            const nonce = (wordPos << 8n) | bitPos;
-
+            const nonce = (wordPos << 8n) | nextBitPos;
+            nextBitPos++;
+            
             const deadline =
               Math.floor(Date.now() / 1000) + 3600;
 
