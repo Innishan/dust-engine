@@ -1535,7 +1535,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 toTokenAddress: WETH,
                 fromAmount: amount.toString(),
               
-                fromAddress: address, // USER WALLET
+                fromAddress: DUST_ENGINE_ADDRESS,
                 toAddress: address,   // USER WALLET
 
                 options: {
