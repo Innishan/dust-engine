@@ -1602,6 +1602,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
 
             const tx = stepTx?.transactionRequest;
 
+            console.log("TX TO ADDRESS:", tx.to);
+            console.log("STEP TO ADDRESS:", step.action.toAddress);
+            console.log("RAW STEP:", step);
+
             // ✅ FINAL VALIDATION
             if (!tx || !tx.to || !tx.data) {
               console.log("❌ Invalid tx constructed:", tx);
