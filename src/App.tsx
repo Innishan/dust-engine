@@ -1566,6 +1566,24 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               });
 
               console.log("🔥 LIFI ROUTES:", routes);
+              
+              const step =
+                routes.routes[0].steps[0];
+
+              console.log(
+                "STEP TO ADDRESS:",
+                step.action.toAddress
+              );
+
+              if (
+                step.action.toAddress?.toLowerCase() !==
+                DUST_ENGINE_ADDRESS.toLowerCase()
+              ) {
+                throw new Error(
+                  "LiFi recipient NOT DustEngine"
+                );
+              }
+
               console.log(
                 "STEP DETAILS:",
                 JSON.stringify(
