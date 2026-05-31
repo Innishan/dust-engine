@@ -1652,8 +1652,8 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
                 token: token.address,
                 amount
               },
-              spender: tx.to as `0x${string}`,
-              nonce: nonce.toString(),
+              spender: DUST_ENGINE_ADDRESS,
+              nonce,
               deadline
             };
 
