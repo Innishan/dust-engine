@@ -1440,7 +1440,14 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
         const valuesArr: bigint[] = [];
         const swapDataArr: `0x${string}`[] = [];
 
-        const approvedTokens = new Set<string>();
+        const approvedTokens =
+          new Set<string>(
+            JSON.parse(
+              localStorage.getItem(
+                `dustApproved_${address}`
+              ) || "[]"
+            )
+          );
 
         const wordPos = 0n;
 
@@ -1517,7 +1524,10 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
             ]
           });
 
-          if (allowance < amount) {
+          if (
+            allowance < amount &&
+            !approvedTokens.has(token.address.toLowerCase())
+          ) {
             addLog(`APPROVING ${token.symbol}...`);
 
             const approveHash = await writeContractAsync({
@@ -1527,9 +1537,22 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               args: [PERMIT2_ADDRESS, maxUint256]
             });
 
+            addLog(`⏳ Waiting approval for ${token.symbol}...`);
+
             await publicClient.waitForTransactionReceipt({
               hash: approveHash
             });
+
+            approvedTokens.add(
+              token.address.toLowerCase()
+            );
+          
+            localStorage.setItem(
+              `dustApproved_${address}`,
+              JSON.stringify(
+                [...approvedTokens]
+              )
+            );
           }
 
           if (amount <= 0n) {
