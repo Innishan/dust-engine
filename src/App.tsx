@@ -1365,7 +1365,7 @@ function SwapButton({ tokens, setTokens, onSuccess, addLog, isConnected, setOpen
               }
             });
 
-            const spender = swapRes.data.approvalAddress;
+            const spender = PERMIT2_ADDRESS;
 
             console.log("🔍 1INCH RESPONSE:", swapRes.data);
             
