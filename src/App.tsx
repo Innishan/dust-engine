@@ -1908,14 +1908,24 @@ function SwapButton({
             console.log("RECEIPT STATUS:", receipt.status);
             console.log("GAS USED:", receipt.gasUsed?.toString());
             console.log("LOGS:", receipt.logs);
-            console.log(
-              "DEBUG EVENT RAW:",
-              receipt.logs.map((l) => ({
-                address: l.address,
-                topics: l.topics,
-              })),
-            );
-            console.log("TO:", receipt.to);
+
+            try {
+              const parsedLogs = receipt.logs.map((log) => {
+                try {
+                  return decodeEventLog({
+                    abi: DUST_ENGINE_ABI,
+                    data: log.data,
+                    topics: log.topics,
+                  });
+                } catch {
+                  return null;
+                }
+              });
+
+              console.log("PARSED LOGS:", parsedLogs);
+            } catch (e) {
+              console.log("LOG PARSE FAILED:", e);
+            }
 
             if (receipt.status === "success") {
               addLog("✅ Contract swap completed");
