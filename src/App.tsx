@@ -1908,6 +1908,32 @@ function SwapButton({
             console.log("RECEIPT STATUS:", receipt.status);
             console.log("GAS USED:", receipt.gasUsed?.toString());
             console.log("LOGS:", receipt.logs);
+            console.log("DEBUG EVENT RAW:", receipt.logs);
+            
+            const SWAP_FAILED_TOPIC =
+              "0xfe6bbaf9875f995c8d6dacfc5247772cf0a90b3efd2b5c71204476c142ce3c4f";
+
+            const DEBUG_TOPIC =
+              "0x831cbf9f01add60715b6c2ea1016801f01c3570519cef4de93ce9c722257cca5";
+
+            const swapFailed = receipt.logs.some(
+              (log) =>
+                log.address.toLowerCase() === DUST_ENGINE_ADDRESS.toLowerCase() &&
+                log.topics?.[0]?.toLowerCase() === SWAP_FAILED_TOPIC.toLowerCase()
+            );
+
+            const debugSuccess = receipt.logs.some(
+              (log) =>
+                log.address.toLowerCase() === DUST_ENGINE_ADDRESS.toLowerCase() &&
+                log.topics?.[0]?.toLowerCase() === DEBUG_TOPIC.toLowerCase()
+            );
+
+            console.log("SWAP FAILED?", swapFailed);
+            console.log("DEBUG SUCCESS?", debugSuccess);
+
+            if (swapFailed) {
+              throw new Error("Internal swap failed");
+            }
 
             try {
               const parsedLogs = receipt.logs.map((log) => {
