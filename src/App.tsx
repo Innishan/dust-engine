@@ -1912,7 +1912,7 @@ function SwapButton({
             console.log("LOGS:", receipt.logs);
             
             receipt.logs.forEach((log, i) => {
-              console.log("LOG", i);
+              console.log("FULL LOG", i);
               console.log("ADDRESS:", log.address);
               console.log("TOPICS:", log.topics);
               console.log("DATA:", log.data);
