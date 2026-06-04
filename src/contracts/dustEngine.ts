@@ -1,7 +1,31 @@
 export const DUST_ENGINE_ADDRESS =
-  "0x4D9c905698a8534ae88908508c0e8d115C5dcf1b";
+  "0xB51a8df8ea6323Bb3A8E0f410558D4f138DDC1F7";
 
 export const DUST_ENGINE_ABI = [
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "success",
+        "type": "bool"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "result",
+        "type": "bytes"
+      }
+    ],
+    "name": "CallResult",
+    "type": "event"
+  },
   {
     "inputs": [
       {
@@ -49,11 +73,6 @@ export const DUST_ENGINE_ABI = [
     "outputs": [],
     "stateMutability": "payable",
     "type": "function"
-  },
-  {
-    "inputs": [],
-    "stateMutability": "nonpayable",
-    "type": "constructor"
   },
   {
     "anonymous": false,
