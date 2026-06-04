@@ -1956,6 +1956,20 @@ function SwapButton({
 
             console.log("DEBUG DATA LOG:", debugDataLog);
 
+            receipt.logs.forEach((log, i) => {
+              console.log("RAW LOG", i);
+              console.log(log);
+            });
+
+            console.log(
+              "ALL CONTRACT LOGS",
+              receipt.logs.filter(
+                (l) =>
+                  l.address.toLowerCase() ===
+                  DUST_ENGINE_ADDRESS.toLowerCase()
+              )
+            );
+
             if (swapFailed) {
               throw new Error("Internal swap failed");
             }
