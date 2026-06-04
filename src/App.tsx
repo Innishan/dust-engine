@@ -1916,6 +1916,12 @@ function SwapButton({
             const DEBUG_TOPIC =
               "0x831cbf9f01add60715b6c2ea1016801f01c3570519cef4de93ce9c722257cca5";
 
+            const DEBUG_DATA_TOPIC =
+              "0x" +
+              keccak256(
+                toBytes("DebugData(bytes)")
+              ).slice(2);
+
             const swapFailed = receipt.logs.some(
               (log) =>
                 log.address.toLowerCase() === DUST_ENGINE_ADDRESS.toLowerCase() &&
@@ -1930,6 +1936,15 @@ function SwapButton({
 
             console.log("SWAP FAILED?", swapFailed);
             console.log("DEBUG SUCCESS?", debugSuccess);
+
+            const debugDataLog = receipt.logs.find(
+              (log) =>
+                log.address.toLowerCase() === DUST_ENGINE_ADDRESS.toLowerCase() &&
+                log.topics?.[0]?.toLowerCase() ===
+                  DEBUG_DATA_TOPIC.toLowerCase()
+            );
+
+            console.log("DEBUG DATA LOG:", debugDataLog);
 
             if (swapFailed) {
               throw new Error("Internal swap failed");
