@@ -1961,6 +1961,19 @@ function SwapButton({
               console.log(log);
             });
 
+            try {
+              const decoded = decodeEventLog({
+                abi: DUST_ENGINE_ABI,
+                data: log.data,
+                topics: log.topics,
+              });
+
+              console.log("DECODED EVENT:", decoded.eventName);
+              console.log("DECODED ARGS:", decoded.args);
+            } catch (e) {
+              console.log("FAILED TO DECODE");
+            }
+
             console.log(
               "ALL CONTRACT LOGS",
               receipt.logs.filter(
