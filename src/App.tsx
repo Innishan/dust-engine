@@ -47,6 +47,8 @@ import {
   getContract,
   type Address,
   maxUint256,
+  keccak256,
+  toBytes,
 } from "viem";
 import { PERMIT2_ADDRESS } from "@uniswap/permit2-sdk";
 import axios from "axios";
