@@ -1910,6 +1910,14 @@ function SwapButton({
             console.log("RECEIPT STATUS:", receipt.status);
             console.log("GAS USED:", receipt.gasUsed?.toString());
             console.log("LOGS:", receipt.logs);
+            
+            receipt.logs.forEach((log, i) => {
+              console.log("LOG", i);
+              console.log("ADDRESS:", log.address);
+              console.log("TOPICS:", log.topics);
+              console.log("DATA:", log.data);
+            });
+
             console.log("DEBUG EVENT RAW:", receipt.logs);
             
             const SWAP_FAILED_TOPIC =
