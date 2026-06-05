@@ -1,5 +1,5 @@
 export const DUST_ENGINE_ADDRESS =
-  "0xB51a8df8ea6323Bb3A8E0f410558D4f138DDC1F7";
+  "0xEf66A719487baC5f88c445Dfbe37B1B3C825354c";
 
 export const DUST_ENGINE_ABI = [
   {
@@ -91,6 +91,19 @@ export const DUST_ENGINE_ABI = [
       }
     ],
     "name": "Debug",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "DebugBytes",
     "type": "event"
   },
   {
