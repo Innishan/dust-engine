@@ -1729,6 +1729,9 @@ function SwapButton({
           // 🔥 THIS IS THE MISSING PIECE
           const stepTx = await getStepTransaction(step);
 
+          console.log("STEP TX FULL:");
+          console.log(JSON.stringify(stepTx, null, 2));
+
           const tx = stepTx?.transactionRequest;
 
           console.log("TX TO ADDRESS:", tx.to);
