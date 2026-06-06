@@ -1875,7 +1875,7 @@ function SwapButton({
                 "inputs:",
                 item.inputs?.length
               );
-            }
+            } 
           });
 
           console.log("PERMIT SIG COUNT:", permitSignaturesArr.length);
@@ -1907,14 +1907,6 @@ function SwapButton({
           }
 
           try {
-      
-            const cleanDustAbi = DUST_ENGINE_ABI.find(
-              (x) => x.type === "function" && x.name === "cleanDust"
-            );
-
-            console.log("CLEAN DUST ABI:");
-            console.log(cleanDustAbi);
-
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
@@ -1939,14 +1931,6 @@ function SwapButton({
             const receipt = await publicClient.waitForTransactionReceipt({
               hash,
             });
-
-            const tx = await publicClient.getTransaction({
-              hash,
-            });
-
-            console.log("FROM:", tx.from);
-            console.log("TO:", tx.to);
-            console.log("INPUT:", tx.input);
 
             console.log("RECEIPT:", receipt);
             console.log("RECEIPT STATUS:", receipt.status);
