@@ -1572,9 +1572,13 @@ function SwapButton({
 
       let nextBitPos = 0n;
 
+      console.log("PERMIT2 BITMAP:", bitmap.toString());
+
       while (nextBitPos < 256n && ((bitmap >> nextBitPos) & 1n) === 1n) {
         nextBitPos++;
       }
+
+      console.log("NEXT BIT POS:", nextBitPos.toString());
 
       for (const token of validTokens) {
         let amount: bigint;
@@ -1755,6 +1759,9 @@ function SwapButton({
           const nonce = (wordPos << 8n) | nextBitPos;
           nextBitPos++;
 
+          console.log("GENERATED NONCE:", nonce.toString());
+          console.log("WORD POS:", wordPos.toString());
+
           const deadline = Math.floor(Date.now() / 1000) + 3600;
 
           const domain = {
@@ -1785,6 +1792,14 @@ function SwapButton({
             nonce,
             deadline,
           };
+
+          console.log("PERMIT MESSAGE:", {
+            token: token.address,
+            amount: amount.toString(),
+            spender: DUST_ENGINE_ADDRESS,
+            nonce: nonce.toString(),
+            deadline,
+          });
 
           addLog(`SIGNING PERMIT FOR ${token.symbol}...`);
 
