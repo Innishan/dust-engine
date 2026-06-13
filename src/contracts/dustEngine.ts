@@ -1,5 +1,5 @@
 export const DUST_ENGINE_ADDRESS =
-  "0xc7C7Eb086525582e0f703D58F6E32f9586b12702";
+  "0x8CE9D13FEb45cFd723dac5923896A96A46DD3894";
 
 export const DUST_ENGINE_ABI = [
   {
@@ -39,19 +39,19 @@ export const DUST_ENGINE_ABI = [
         "type": "uint256[]"
       },
       {
-        "internalType": "bytes[]",
-        "name": "permitSignatures",
-        "type": "bytes[]"
+        "internalType": "bytes",
+        "name": "permitSignature",
+        "type": "bytes"
       },
       {
-        "internalType": "uint256[]",
-        "name": "nonces",
-        "type": "uint256[]"
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
       },
       {
-        "internalType": "uint256[]",
-        "name": "deadlines",
-        "type": "uint256[]"
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
       },
       {
         "internalType": "address[]",
@@ -129,37 +129,14 @@ export const DUST_ENGINE_ABI = [
   {
     "inputs": [
       {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
+        "internalType": "address[]",
+        "name": "tokens",
+        "type": "address[]"
       },
       {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "user",
-        "type": "address"
-      }
-    ],
-    "name": "pullNormalExternal",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
+        "internalType": "uint256[]",
+        "name": "amounts",
+        "type": "uint256[]"
       },
       {
         "internalType": "bytes",
@@ -182,7 +159,7 @@ export const DUST_ENGINE_ABI = [
         "type": "address"
       }
     ],
-    "name": "pullWithPermitExternal",
+    "name": "pullBatchWithPermitExternal",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

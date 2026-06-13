@@ -1549,10 +1549,6 @@ function SwapButton({
       const tokensArr: string[] = [];
       const amountsArr: bigint[] = [];
 
-      const permitSignaturesArr: `0x${string}`[] = [];
-      const noncesArr: bigint[] = [];
-      const deadlinesArr: bigint[] = [];
-
       const targetsArr: `0x${string}`[] = [];
       const valuesArr: bigint[] = [];
       const swapDataArr: `0x${string}`[] = [];
@@ -1901,11 +1897,6 @@ function SwapButton({
             }
           });
 
-          console.log("PERMIT SIG COUNT:", permitSignaturesArr.length);
-          console.log("PERMIT SIG SAMPLE:", permitSignaturesArr[0]);
-          console.log("NONCES:", noncesArr);
-          console.log("DEADLINES:", deadlinesArr);
-
           try {
             const sim = await publicClient.simulateContract({
               address: DUST_ENGINE_ADDRESS,
@@ -1914,9 +1905,9 @@ function SwapButton({
               args: [
                 tokensArr,
                 amountsArr,
-                permitSignaturesArr,
-                noncesArr,
-                deadlinesArr,
+                batchSignature,
+                batchNonce,
+                batchDeadline,
                 targetsArr,
                 valuesArr,
                 swapDataArr,
@@ -1945,9 +1936,9 @@ function SwapButton({
               args: [
                 tokensArr,
                 amountsArr,
-                permitSignaturesArr,
-                noncesArr,
-                deadlinesArr,
+                batchSignature,
+                batchNonce,
+                batchDeadline,
                 targetsArr,
                 valuesArr,
                 swapDataArr,
