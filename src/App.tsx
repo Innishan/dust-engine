@@ -1759,68 +1759,6 @@ function SwapButton({
             continue; // 🚨 SKIP THIS TOKEN
           }
 
-          const nonce = (wordPos << 8n) | nextBitPos;
-          nextBitPos++;
-
-          console.log("GENERATED NONCE:", nonce.toString());
-          console.log("WORD POS:", wordPos.toString());
-
-          const deadline = Math.floor(Date.now() / 1000) + 3600;
-
-          const domain = {
-            name: "Permit2",
-            chainId: 8453,
-            verifyingContract: PERMIT2_ADDRESS,
-          };
-
-          const types = {
-            PermitTransferFrom: [
-              { name: "permitted", type: "TokenPermissions" },
-              { name: "spender", type: "address" },
-              { name: "nonce", type: "uint256" },
-              { name: "deadline", type: "uint256" },
-            ],
-            TokenPermissions: [
-              { name: "token", type: "address" },
-              { name: "amount", type: "uint256" },
-            ],
-          };
-
-          const message = {
-            permitted: {
-              token: token.address,
-              amount,
-            },
-            spender: DUST_ENGINE_ADDRESS,
-            nonce,
-            deadline,
-          };
-
-          console.log("PERMIT MESSAGE:", {
-            token: token.address,
-            amount: amount.toString(),
-            spender: DUST_ENGINE_ADDRESS,
-            nonce: nonce.toString(),
-            deadline,
-          });
-
-          addLog(`SIGNING PERMIT FOR ${token.symbol}...`);
-
-          console.log("SIGN FUNCTION:", signTypedDataAsync);
-          console.log("TYPE:", typeof signTypedDataAsync);
-
-          const signature = await signTypedDataAsync({
-            domain,
-            types,
-            primaryType: "PermitTransferFrom",
-            message,
-          });
-
-          permitSignaturesArr.push(signature as `0x${string}`);
-
-          noncesArr.push(nonce);
-          deadlinesArr.push(BigInt(deadline));
-
           // ✅ REQUIRED ARRAYS FOR CONTRACT
           tokensArr.push(token.address);
           amountsArr.push(amount);
@@ -1849,8 +1787,90 @@ function SwapButton({
       }
 
       // 🚀 EXECUTE CONTRACT BATCH
+      let batchSignature: `0x${string}` | undefined;
+      let batchNonce: bigint = 0n;
+      let batchDeadline: bigint = 0n;
+
       if (tokensArr.length > 0) {
         try {
+          batchNonce = (wordPos << 8n) | nextBitPos;
+
+          batchDeadline =
+            BigInt(
+              Math.floor(Date.now() / 1000) + 3600
+            );
+
+          const domain = {
+            name: "Permit2",
+            chainId: 8453,
+            verifyingContract: PERMIT2_ADDRESS,
+          };
+
+          const types = {
+            PermitBatchTransferFrom: [
+              {
+                name: "permitted",
+                type: "TokenPermissions[]",
+              },
+              {
+                name: "spender",
+                type: "address",
+              },
+              {
+                name: "nonce",
+                type: "uint256",
+              },
+              {
+                name: "deadline",
+                type: "uint256",
+              },
+            ],
+
+            TokenPermissions: [
+              {
+                name: "token",
+                type: "address",
+              },
+              {
+                name: "amount",
+                type: "uint256",
+              },
+            ],
+          };
+
+          const message = {
+            permitted: tokensArr.map(
+              (token, i) => ({
+                token,
+                amount: amountsArr[i],
+              })
+            ),
+
+            spender: DUST_ENGINE_ADDRESS,
+
+            nonce: batchNonce,
+
+            deadline: batchDeadline,
+          };
+
+          addLog(
+            `✍️ Sign one Permit for ${tokensArr.length} tokens...`
+          );
+
+          batchSignature =
+            await signTypedDataAsync({
+              domain,
+              types,
+              primaryType:
+                "PermitBatchTransferFrom",
+              message,
+            });
+
+          console.log(
+            "BATCH SIGNATURE:",
+            batchSignature
+          );
+
           addLog("🚀 Executing via contract...");
 
           console.log("TOKENS:", tokensArr);
