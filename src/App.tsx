@@ -1918,6 +1918,16 @@ function SwapButton({
             console.log("SIMULATION OK", sim);
           } catch (e) {
             console.error("SIMULATION ERROR", e);
+          
+            const bitmapAfter = await publicClient.readContract({
+              address: PERMIT2_ADDRESS,
+              abi: PERMIT2_SIGNATURE_ABI,
+              functionName: "nonceBitmap",
+              args: [address as `0x${string}`, 0n],
+            });
+
+            console.log("BITMAP AFTER:", bitmapAfter.toString());
+
           }
 
           try {
