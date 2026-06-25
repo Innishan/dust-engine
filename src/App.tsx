@@ -1853,6 +1853,11 @@ function SwapButton({
             `✍️ Sign one Permit for ${tokensArr.length} tokens...`
           );
 
+          console.log("DOMAIN:", domain);
+          console.log("MESSAGE:", message);
+          console.log("PERMIT2:", PERMIT2_ADDRESS);
+          console.log("SPENDER:", DUST_ENGINE_ADDRESS);
+
           batchSignature =
             await signTypedDataAsync({
               domain,
