@@ -1809,10 +1809,6 @@ function SwapButton({
                 type: "TokenPermissions[]",
               },
               {
-                name: "spender",
-                type: "address",
-              },
-              {
                 name: "nonce",
                 type: "uint256",
               },
@@ -1841,8 +1837,6 @@ function SwapButton({
                 amount: amountsArr[i],
               })
             ),
-
-            spender: DUST_ENGINE_ADDRESS,
 
             nonce: batchNonce,
 
