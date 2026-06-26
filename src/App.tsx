@@ -1809,6 +1809,10 @@ function SwapButton({
                 type: "TokenPermissions[]",
               },
               {
+                name: "spender",
+                type: "address",
+              },
+              {
                 name: "nonce",
                 type: "uint256",
               },
@@ -1838,6 +1842,8 @@ function SwapButton({
               })
             ),
 
+            spender: DUST_ENGINE_ADDRESS,
+
             nonce: batchNonce,
 
             deadline: batchDeadline,
@@ -1851,6 +1857,11 @@ function SwapButton({
           console.log("MESSAGE:", message);
           console.log("PERMIT2:", PERMIT2_ADDRESS);
           console.log("SPENDER:", DUST_ENGINE_ADDRESS);
+
+          console.log(
+            "TYPES:",
+            JSON.stringify(types, null, 2)
+          );
 
           batchSignature =
             await signTypedDataAsync({
