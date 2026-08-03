@@ -19,3 +19,4 @@ View your app in AI Studio: https://ai.studio/apps/e4c8343f-101b-44d2-9616-15978
 3. Run the app:
    `npm run dev`
    Dust Engine cleans up wallet dust on Base, turning leftover micro-balances into actionable, high-value assets with a single click.
+- Commit 1 -->
