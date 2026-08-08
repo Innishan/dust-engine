@@ -18,5 +18,9 @@ View your app in AI Studio: https://ai.studio/apps/e4c8343f-101b-44d2-9616-15978
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+<<<<<<< HEAD
    Dust Engine cleans up wallet dust on Base, turning leftover micro-balances into actionable, high-value assets with a single click.
 - Commit 1 -->
+=======
+Update 1
+>>>>>>> 70eca03 (Commit 1)
