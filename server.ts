@@ -32,9 +32,9 @@ async function startServer() {
 
   // Stats
   let globalStats = {
-    totalDustCleanedUsd: 1245.67,
-    totalSwaps: 842,
-    usersServed: 156
+    totalDustCleanedUsd: 210,
+    totalSwaps: 142,
+    usersServed: 105
   };
 
   app.get("/api/stats", (req, res) => {
