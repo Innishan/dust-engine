@@ -2059,10 +2059,6 @@ function SwapButton({
               )
             );
 
-            if (swapFailed) {
-              throw new Error("Internal swap failed");
-            }
-
             try {
               const parsedLogs = receipt.logs.map((log) => {
                 try {
@@ -2077,30 +2073,87 @@ function SwapButton({
               });
 
               console.log("PARSED LOGS:", parsedLogs);
+
+              if (receipt.status === "success") {
+                addLog("✅ Compression transaction confirmed");
+
+                const debugResults = parsedLogs
+                  .filter(
+                    (log): log is any =>
+                      log !== null &&
+                      log.eventName === "Debug" &&
+                      log.args &&
+                      typeof log.args.token === "string" &&
+                      typeof log.args.success === "boolean",
+                  )
+                  .map((log) => ({
+                    token: log.args.token.toLowerCase(),
+                    success: log.args.success,
+                  }));
+
+                console.log("PER-TOKEN DEBUG RESULTS:", debugResults);
+
+                const successfulAddresses = new Set(
+                  debugResults
+                    .filter((result) => result.success)
+                    .map((result) => result.token),
+                );
+
+                const successfulTokens =
+                  debugResults.length > 0
+                    ? validTokens.filter((token) =>
+                        successfulAddresses.has(token.address.toLowerCase()),
+                      )
+                    : validTokens;
+
+                const failedTokens =
+                  debugResults.length > 0
+                    ? validTokens.filter(
+                        (token) => !successfulAddresses.has(token.address.toLowerCase()),
+                      )
+                    : [];
+
+                console.log("SUCCESSFUL TOKENS:", successfulTokens);
+                console.log("FAILED TOKENS:", failedTokens);
+
+                successCount = successfulTokens.length;
+
+                actualSwappedValue = successfulTokens.reduce(
+                  (acc, token) => acc + (token.valueUsd || 0),
+                  0,
+                );
+
+                successfulTokenAddresses.push(
+                  ...successfulTokens.map((token) => token.address.toLowerCase()),
+                );
+
+                if (failedTokens.length > 0) {
+                  addLog(
+                    `⚠️ ${failedTokens.length} token${
+                      failedTokens.length === 1 ? "" : "s"
+                    } failed, but successful swaps were completed`,
+                  );
+                }
+
+                if (successCount > 0) {
+                  addLog(
+                    `✅ ${successCount} of ${validTokens.length} token${
+                      validTokens.length === 1 ? "" : "s"
+                    } swapped successfully`,
+                  );
+                  setStep("success");
+                } else {
+                  addLog("❌ No tokens were swapped successfully");
+                }
+              } else {
+                console.error("❌ RECEIPT REVERT:", receipt);
+                console.log("REVERT TX HASH:", hash);
+                addLog("❌ Transaction reverted");
+              }
             } catch (e) {
-              console.log("LOG PARSE FAILED:", e);
+              console.error("❌ LOG PROCESSING ERROR:", e);
             }
 
-            if (receipt.status === "success") {
-              addLog("✅ Contract swap completed");
-
-              successCount = tokensArr.length;
-
-              actualSwappedValue = validTokens.reduce(
-                (acc, t) => acc + (t.valueUsd || 0),
-                0,
-              );
-
-              successfulTokenAddresses.push(
-                ...tokensArr.map((t) => t.toLowerCase()),
-              );
-
-              setStep("success");
-            } else {
-              console.error("❌ RECEIPT REVERT:", receipt);
-              console.log("REVERT TX HASH:", hash);
-              addLog("❌ Transaction reverted");
-            }
           } catch (err: any) {
             console.error("❌ WRITE ERROR FULL:", err);
             console.error("SHORT MESSAGE:", err?.shortMessage);
