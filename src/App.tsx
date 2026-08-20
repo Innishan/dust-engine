@@ -22,7 +22,7 @@ import {
   useModal,
 } from "connectkit";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Settings,
@@ -232,7 +232,11 @@ interface TokenInfo {
   selected: boolean;
 }
 
+type ProductSection = "clean" | "lend" | "bridge";
+
 export default function App() {
+  const [activeSection, setActiveSection] = useState<ProductSection>("clean");
+
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
@@ -270,8 +274,28 @@ export default function App() {
               </div>
             </header>
 
-            <main className="max-w-4xl mx-auto px-4 py-12">
-              <EngineCore />
+            <main className="max-w-4xl mx-auto px-4 py-8 sm:py-12">
+              <ProductNavigation
+                activeSection={activeSection}
+                onSelect={setActiveSection}
+              />
+              <div hidden={activeSection !== "clean"}>
+                <EngineCore />
+              </div>
+              {activeSection === "lend" && (
+                <ComingSoonPanel
+                  icon={<Wrench size={24} strokeWidth={1.75} />}
+                  title="Lend & Borrow"
+                  description="Lending and borrowing tools are in development. This section will become available when the experience is ready."
+                />
+              )}
+              {activeSection === "bridge" && (
+                <ComingSoonPanel
+                  icon={<ArrowRight size={24} strokeWidth={1.75} />}
+                  title="Cross-Chain Bridge"
+                  description="Cross-chain functionality is in development. Bridging is not available in Dust Engine yet."
+                />
+              )}
             </main>
           </div>
         </ConnectKitProvider>
@@ -285,6 +309,104 @@ function ConnectButton() {
     <div className="scale-90 sm:scale-100 origin-right max-w-[120px] sm:max-w-none overflow-hidden flex justify-end">
       <ConnectKitButton />
     </div>
+  );
+}
+
+function ProductNavigation({
+  activeSection,
+  onSelect,
+}: {
+  activeSection: ProductSection;
+  onSelect: (section: ProductSection) => void;
+}) {
+  const sections: {
+    id: ProductSection;
+    label: string;
+    icon: ReactNode;
+    comingSoon?: boolean;
+  }[] = [
+    { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
+    {
+      id: "lend",
+      label: "Lend & Borrow",
+      icon: <Wrench size={16} />,
+      comingSoon: true,
+    },
+    {
+      id: "bridge",
+      label: "Bridge",
+      icon: <ArrowRight size={16} />,
+      comingSoon: true,
+    },
+  ];
+
+  return (
+    <nav
+      aria-label="Dust Engine product sections"
+      className="mb-6 sm:mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1.5 shadow-lg shadow-black/10"
+    >
+      <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
+        {sections.map((section) => {
+          const isActive = activeSection === section.id;
+
+          return (
+            <button
+              key={section.id}
+              type="button"
+              onClick={() => onSelect(section.id)}
+              aria-pressed={isActive}
+              className={cn(
+                "flex min-h-11 items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-left transition-colors",
+                isActive
+                  ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/30"
+                  : "text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200",
+              )}
+            >
+              <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide">
+                {section.icon}
+                {section.label}
+              </span>
+              {section.comingSoon && (
+                <span className="rounded-full border border-zinc-700 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
+                  Soon
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function ComingSoonPanel({
+  icon,
+  title,
+  description,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <section className="relative overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl sm:p-10">
+      <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-emerald-500/5 blur-2xl" />
+      <div className="relative mx-auto flex max-w-md flex-col items-center text-center">
+        <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
+          {icon}
+        </div>
+        <span className="mb-3 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-emerald-400">
+          Coming Soon
+        </span>
+        <h2 className="text-2xl font-black uppercase italic tracking-tight text-zinc-100 sm:text-3xl">
+          {title}
+        </h2>
+        <p className="mt-3 text-sm leading-6 text-zinc-400">{description}</p>
+        <p className="mt-6 text-[10px] font-mono uppercase tracking-wider text-zinc-600">
+          No wallet actions are available in this section.
+        </p>
+      </div>
+    </section>
   );
 }
 
