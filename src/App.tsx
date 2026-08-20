@@ -297,6 +297,7 @@ export default function App() {
                 />
               )}
             </main>
+            <AppFooter />
           </div>
         </ConnectKitProvider>
       </QueryClientProvider>
@@ -407,6 +408,55 @@ function ComingSoonPanel({
         </p>
       </div>
     </section>
+  );
+}
+
+function AppFooter() {
+  return (
+    <footer className="border-t border-zinc-800/70 bg-zinc-950/70">
+      <div className="mx-auto flex max-w-4xl flex-col items-center gap-3 px-4 py-6 text-center sm:flex-row sm:justify-between sm:text-left">
+        <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-400">
+          Dust <span className="text-emerald-500">Engine</span>
+        </span>
+        <div className="flex items-center gap-2">
+          <a
+            href="https://x.com/dustengineapp"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Follow Dust Engine on X"
+            title="Follow Dust Engine on X"
+            className="group flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/60 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/70"
+          >
+            <img
+              src="/x-logo.svg"
+              width="18"
+              height="18"
+              alt=""
+              className="opacity-60 invert transition-opacity group-hover:opacity-100"
+            />
+          </a>
+          <a
+            href="https://farcaster.xyz/dustengine"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Follow Dust Engine on Farcaster"
+            title="Follow Dust Engine on Farcaster"
+            className="group flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/60 transition-colors hover:border-emerald-500/40 hover:bg-emerald-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/70"
+          >
+            <img
+              src="/farcaster-logo.svg"
+              width="18"
+              height="18"
+              alt=""
+              className="opacity-60 invert transition-opacity group-hover:opacity-100"
+            />
+          </a>
+        </div>
+        <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">
+          © 2026 Dust Engine
+        </span>
+      </div>
+    </footer>
   );
 }
 
@@ -1293,22 +1343,6 @@ function EngineCore() {
                   <div className="opacity-30 italic">WAITING FOR INPUT...</div>
                 )}
               </div>
-            </div>
-            <div className="absolute bottom-0 flex items-center gap-4">
-              <a
-                href="https://x.com/enginedust"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <img src="/x-logo.svg" width="28" alt="X" />
-              </a>
-              <a
-                href="https://farcaster.xyz/dustengine"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <img src="/farcaster-logo.svg" width="28" alt="Farcaster" />
-              </a>
             </div>
           </div>
         </div>
