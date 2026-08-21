@@ -1,9 +1,11 @@
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from 'url';
 import cors from "cors";
+import Database from "better-sqlite3";
 
 dotenv.config();
 
@@ -31,21 +33,52 @@ async function startServer() {
   });
 
   // Stats
-  let globalStats = {
-    totalDustCleanedUsd: 210,
-    totalSwaps: 142,
-    usersServed: 105
-  };
+  const statsDatabasePath = fs.existsSync("/data")
+    ? "/data/dust-engine.sqlite"
+    : path.join(__dirname, "dust-engine.sqlite");
+  const statsDb = new Database(statsDatabasePath);
+
+  statsDb.exec(`
+    CREATE TABLE IF NOT EXISTS app_stats (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      total_dust_cleaned_usd REAL NOT NULL,
+      total_swaps INTEGER NOT NULL,
+      users_served INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO app_stats (
+      id,
+      total_dust_cleaned_usd,
+      total_swaps,
+      users_served
+    ) VALUES (1, 210, 142, 105);
+  `);
+
+  const getStats = statsDb.prepare(`
+    SELECT
+      total_dust_cleaned_usd AS totalDustCleanedUsd,
+      total_swaps AS totalSwaps,
+      users_served AS usersServed
+    FROM app_stats
+    WHERE id = 1
+  `);
+  const updateStats = statsDb.transaction((valueUsd: number) => {
+    statsDb.prepare(`
+      UPDATE app_stats
+      SET
+        total_dust_cleaned_usd = total_dust_cleaned_usd + ?,
+        total_swaps = total_swaps + 1,
+        users_served = users_served + 1
+      WHERE id = 1
+    `).run(valueUsd);
+  });
 
   app.get("/api/stats", (req, res) => {
-    res.json(globalStats);
+    res.json(getStats.get());
   });
 
   app.post("/api/report-swap", (req, res) => {
     const { valueUsd } = req.body;
-    globalStats.totalDustCleanedUsd += (valueUsd || 0);
-    globalStats.totalSwaps += 1;
-    globalStats.usersServed += 1;
+    updateStats(valueUsd || 0);
     res.json({ success: true });
   });
 
