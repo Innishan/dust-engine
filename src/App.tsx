@@ -445,10 +445,10 @@ function AppFooter() {
           >
             <img
               src="/farcaster-logo.svg"
-              width="18"
-              height="18"
+              width="24"
+              height="24"
               alt=""
-              className="opacity-60 invert transition-opacity group-hover:opacity-100"
+              className="opacity-60 transition-opacity group-hover:opacity-100"
             />
           </a>
         </div>
