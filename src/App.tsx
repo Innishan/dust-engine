@@ -586,37 +586,12 @@ function EngineCore() {
         addLog(`BACKEND SCAN FAILED: ${e.message}`);
       }
 
-      // 1.2 Direct Blockscout Indexer Scan (Supplement)
-      try {
-        const bsRes = await axios.get(
-          `https://base.blockscout.com/api/v2/addresses/${addressToScan}/token-balances`,
-          { timeout: 10000 },
-        );
-        const bsItems = bsRes.data?.items || [];
-        if (bsItems.length > 0) {
-          const bsTokens = bsItems
-            .filter((t: any) => t.token?.address_hash)
-            .map((t: any) => ({
-              symbol: t.token.symbol || "???",
-              address: t.token.address_hash as Address,
-              decimals: parseInt(t.token.decimals || "18"),
-              priceUsd: parseFloat(t.token.exchange_rate || "0"),
-            }));
-          discoveredTokens = [...discoveredTokens, ...bsTokens];
-          addLog(`BLOCKSCOUT FOUND: ${bsTokens.length} TOKENS`);
-          addLog(`INDEXER: DISCOVERED ${bsTokens.length} ASSETS`);
-          console.log("BLOCKSCOUT TOKENS:", bsTokens);
-        }
-      } catch (e) {
-        console.warn("Indexer scan failed", e);
-      }
-
-      // 1.3 1inch discovery disabled
+      // 1.2 1inch discovery disabled
       // 1inch returns ALL Base tokens which breaks dust detection
       let oneInchTokens: any[] = [];
       addLog("1INCH DISCOVERY DISABLED (USING WALLET TOKENS ONLY)");
 
-      // 1.4 Deep Scan (DexScreener Search for any missing assets)
+      // 1.3 Deep Scan (DexScreener Search for any missing assets)
       // addLog("DEEP SCAN: CHECKING DEX LIQUIDITY...");
 
       // ❌ TEMP DISABLED (too slow)
@@ -652,9 +627,44 @@ function EngineCore() {
       */
       console.log("Liquidity Map:", liquidityMap);
 
-      const finalSeen = new Set<string>();
+      const candidatesByAddress = new Map<string, any>();
+      const mergeCandidate = (candidate: any) => {
+        if (!candidate.address) return;
 
-      const finalScanList = discoveredTokens
+        const key = candidate.address.toLowerCase();
+        const existing = candidatesByAddress.get(key);
+
+        if (!existing) {
+          candidatesByAddress.set(key, candidate);
+          return;
+        }
+
+        candidatesByAddress.set(key, {
+          ...existing,
+          address: existing.address || candidate.address,
+          symbol:
+            existing.symbol && existing.symbol !== "???"
+              ? existing.symbol
+              : candidate.symbol || existing.symbol,
+          name: existing.name || candidate.name,
+          decimals: existing.decimals ?? candidate.decimals,
+          balance:
+            existing.balance && existing.balance !== "0"
+              ? existing.balance
+              : candidate.balance,
+          priceUsd:
+            existing.priceUsd > 0 ? existing.priceUsd : candidate.priceUsd,
+          source:
+            existing.source === candidate.source
+              ? existing.source
+              : `${existing.source},${candidate.source}`,
+        });
+      };
+
+      discoveredTokens.forEach(mergeCandidate);
+      oneInchTokens.forEach(mergeCandidate);
+
+      const finalScanList = Array.from(candidatesByAddress.values())
         .filter((t) => {
           if (!t.address) return false;
 
@@ -677,8 +687,8 @@ function EngineCore() {
           return true;
         })
         .map((t) => {
-          finalSeen.add(t.address.toLowerCase());
           return {
+            ...t,
             symbol: t.symbol || "???",
             address: t.address as Address,
             decimals: t.decimals ?? 18, // don't override if exists
@@ -687,14 +697,6 @@ function EngineCore() {
 
       addLog(`INDEXER PROVIDED TOKENS`);
       console.time("⏱️ TOTAL SCAN");
-
-      // Add 1inch tokens (Very aggressive discovery)
-      oneInchTokens.forEach((t) => {
-        if (t.address && !finalSeen.has(t.address.toLowerCase())) {
-          finalScanList.push(t);
-          finalSeen.add(t.address.toLowerCase());
-        }
-      });
 
       addLog(`VERIFYING ${finalScanList.length} ASSETS ON-CHAIN...`);
 
@@ -800,7 +802,7 @@ function EngineCore() {
       let prices: Record<string, number> = {};
 
       // 3.1 Use prices from indexer first
-      discoveredTokens.forEach((t) => {
+      finalScanList.forEach((t) => {
         if (t.address && t.priceUsd > 0)
           prices[t.address.toLowerCase()] = t.priceUsd;
       });

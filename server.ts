@@ -57,7 +57,35 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid address" });
     }
 
-    const tokens = new Map();
+    const tokens = new Map<string, any>();
+
+    const mergeToken = (candidate: any) => {
+      const key = candidate.address.toLowerCase();
+      const existing = tokens.get(key);
+
+      if (!existing) {
+        tokens.set(key, candidate);
+        return;
+      }
+
+      tokens.set(key, {
+        ...existing,
+        address: existing.address || candidate.address,
+        symbol: existing.symbol || candidate.symbol,
+        name: existing.name || candidate.name,
+        decimals: existing.decimals ?? candidate.decimals,
+        balance:
+          existing.balance && existing.balance !== "0"
+            ? existing.balance
+            : candidate.balance,
+        priceUsd:
+          existing.priceUsd > 0 ? existing.priceUsd : candidate.priceUsd,
+        source:
+          existing.source === candidate.source
+            ? existing.source
+            : `${existing.source},${candidate.source}`,
+      });
+    };
 
     try {
       // 1. Blockscout Balances
@@ -74,13 +102,13 @@ async function startServer() {
         console.log("Parsed items count:", items.length);
         items.forEach((t: any) => {
           if (t.token?.address_hash) {
-            const addr = t.token.address_hash.toLowerCase();
-
-            tokens.set(addr, {
-              symbol: t.token.symbol || '???',
+            mergeToken({
+              symbol: t.token.symbol,
+              name: t.token.name,
               address: t.token.address_hash,
               decimals: parseInt(t.token.decimals || '18'),
               balance: t.value || "0", // 🔥 THIS IS CRITICAL
+              priceUsd: parseFloat(t.token.exchange_rate || "0"),
               source: 'indexer'
             });
           }
@@ -98,17 +126,15 @@ async function startServer() {
         const historyItems = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.items || []);
         historyItems.forEach((t: any) => {
           if (t.token?.address_hash && t.token?.type === 'ERC-20') {
-            const addr = t.token.address_hash.toLowerCase();
-
-            if (!tokens.has(addr)) {
-              tokens.set(addr, {
-                symbol: t.token.symbol || '???',
-                address: t.token.address_hash,
-                decimals: parseInt(t.token.decimals || '18'),
-                balance: "0",
-                source: 'history'
-              });
-            }
+            mergeToken({
+              symbol: t.token.symbol,
+              name: t.token.name,
+              address: t.token.address_hash,
+              decimals: parseInt(t.token.decimals || '18'),
+              balance: "0",
+              priceUsd: parseFloat(t.token.exchange_rate || "0"),
+              source: 'history'
+            });
           }
         });
       } catch (e: any) {
