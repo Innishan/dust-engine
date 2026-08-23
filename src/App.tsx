@@ -57,6 +57,7 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { getRoutes, getStepTransaction } from "@lifi/sdk";
 import { sdk } from "@farcaster/miniapp-sdk";
+import { BridgePanel } from "./bridge/BridgePanel";
 
 sdk.actions.ready();
 
@@ -290,11 +291,7 @@ export default function App() {
                 />
               )}
               {activeSection === "bridge" && (
-                <ComingSoonPanel
-                  icon={<ArrowRight size={24} strokeWidth={1.75} />}
-                  title="Cross-Chain Bridge"
-                  description="Cross-chain functionality is in development. Bridging is not available in Dust Engine yet."
-                />
+                <BridgePanel />
               )}
             </main>
             <AppFooter />
@@ -337,7 +334,6 @@ function ProductNavigation({
       id: "bridge",
       label: "Bridge",
       icon: <ArrowRight size={16} />,
-      comingSoon: true,
     },
   ];
 
