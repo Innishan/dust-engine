@@ -2,6 +2,7 @@ import {
   AlertCircle,
   ArrowRightLeft,
   CheckCircle2,
+  ChevronDown,
   ExternalLink,
   Loader2,
   Play,
@@ -28,7 +29,6 @@ import {
   BRIDGE_FEE,
   BRIDGE_INTEGRATOR,
   configureBridgeEvmProvider,
-  getBridgeNativeGasReserve,
   getBridgeTokenBalance,
   getSupportedConnections,
   getSupportedEvmChains,
@@ -36,7 +36,10 @@ import {
 } from "./lifi";
 
 type TokenSelectorProps = {
+  address?: Address;
   chainId?: number;
+  chains: ExtendedChain[];
+  disabled?: boolean;
   label: string;
   onSelect: (token?: Token) => void;
   selectedToken?: Token;
@@ -123,8 +126,50 @@ function isUsableBridgeToken(token: Token, chainId: number) {
   );
 }
 
-function TokenSelector({
+function tokenInitials(token: Token) {
+  return token.symbol.trim().slice(0, 2).toUpperCase();
+}
+
+function TokenAvatar({ token, size = "md" }: { token: Token; size?: "sm" | "md" }) {
+  const [hasImageError, setHasImageError] = useState(false);
+  const logoUri = token.logoURI?.trim();
+  const hasLogo = Boolean(logoUri && /^https?:\/\//i.test(logoUri) && !hasImageError);
+  const sizeClass = size === "sm" ? "h-9 w-9 text-[10px]" : "h-11 w-11 text-xs";
+
+  if (hasLogo) {
+    return (
+      <img
+        src={logoUri}
+        alt=""
+        onError={() => setHasImageError(true)}
+        className={`${sizeClass} shrink-0 rounded-full border border-zinc-700/80 bg-zinc-900 object-cover`}
+      />
+    );
+  }
+
+  return (
+    <span className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/10 font-mono font-bold text-emerald-300`}>
+      {tokenInitials(token)}
+    </span>
+  );
+}
+
+function formatWalletBalance(balance: bigint | undefined, token: Token) {
+  if (balance === undefined) return "—";
+  try {
+    return Number(formatUnits(balance, token.decimals)).toLocaleString(undefined, {
+      maximumFractionDigits: 6,
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function TokenPicker({
+  address,
   chainId,
+  chains,
+  disabled,
   label,
   onSelect,
   selectedToken,
@@ -133,6 +178,8 @@ function TokenSelector({
   const [tokens, setTokens] = useState<Token[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [balances, setBalances] = useState<Record<string, bigint>>({});
 
   useEffect(() => {
     if (!chainId) {
@@ -182,37 +229,93 @@ function TokenSelector({
     };
   }, [chainId, onSelect, query, selectedToken?.address]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isOpen]);
+
+  useEffect(() => {
+    setBalances({});
+  }, [address, chainId]);
+
+  const balanceTargets = useMemo(() => {
+    const visibleTokens = isOpen ? tokens.slice(0, 24) : [];
+    if (selectedToken && !visibleTokens.some((token) => token.address === selectedToken.address)) {
+      visibleTokens.unshift(selectedToken);
+    }
+    return visibleTokens;
+  }, [isOpen, selectedToken, tokens]);
+
+  useEffect(() => {
+    if (!address || !chainId || chains.length === 0 || balanceTargets.length === 0) return;
+    let isCurrent = true;
+    const missingTokens = balanceTargets.filter((token) => balances[token.address.toLowerCase()] === undefined);
+    if (missingTokens.length === 0) return;
+
+    void Promise.allSettled(
+      missingTokens.map(async (token) => ({
+        key: token.address.toLowerCase(),
+        balance: await getBridgeTokenBalance({ address, chainId, chains, token }),
+      })),
+    ).then((results) => {
+      if (!isCurrent) return;
+      setBalances((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          if (result.status === "fulfilled") next[result.value.key] = result.value.balance;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [address, balanceTargets, balances, chainId, chains]);
+
+  const selectToken = (token: Token) => {
+    onSelect(token);
+    setIsOpen(false);
+    setQuery("");
+  };
+
+  const selectedBalance = selectedToken
+    ? balances[selectedToken.address.toLowerCase()]
+    : undefined;
+
   return (
-    <label className="block">
+    <div className="block">
       <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">
         {label}
       </span>
-      <div className="relative mb-2">
-        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" size={15} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          disabled={!chainId}
-          placeholder={chainId ? "Search LI.FI tokens" : "Select a network first"}
-          className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-9 py-2.5 text-sm text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-50"
-        />
-      </div>
-      <select
-        value={selectedToken?.address ?? ""}
-        onChange={(event) =>
-          onSelect(tokens.find((token) => token.address === event.target.value))
-        }
-        disabled={!chainId || isLoading || tokens.length === 0}
-        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none transition-colors focus:border-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        disabled={!chainId || disabled}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        className="flex min-h-16 w-full items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 px-3.5 py-3 text-left transition-colors hover:border-emerald-500/40 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {isLoading && <option>Loading LI.FI tokens…</option>}
-        {!isLoading && tokens.length === 0 && <option>No supported tokens found</option>}
-        {tokens.map((token) => (
-          <option key={token.address} value={token.address}>
-            {token.symbol} — {token.name} — {tokenAddressLabel(token)}
-          </option>
-        ))}
-      </select>
+        {selectedToken ? (
+          <span className="flex min-w-0 items-center gap-3">
+            <TokenAvatar token={selectedToken} />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-bold text-zinc-100">{selectedToken.symbol}</span>
+              <span className="block truncate text-xs text-zinc-500">{selectedToken.name}</span>
+            </span>
+          </span>
+        ) : (
+          <span className="text-sm text-zinc-500">{isLoading ? "Loading LI.FI tokens…" : "Select token"}</span>
+        )}
+        <span className="flex shrink-0 flex-col items-end gap-1">
+          {address && selectedToken && <span className="text-xs font-mono text-zinc-400">{formatWalletBalance(selectedBalance, selectedToken)}</span>}
+          <ChevronDown size={16} className="text-zinc-500" />
+        </span>
+      </button>
       {selectedToken && (
         <span className="mt-2 block break-all text-[10px] font-mono text-zinc-500">
           {tokenAddressLabel(selectedToken)} · {selectedToken.decimals} decimals
@@ -222,7 +325,35 @@ function TokenSelector({
         Token metadata is provided by LI.FI. Verify the token contract address independently before bridging.
       </span>
       {error && <span className="mt-2 block text-xs text-rose-400">{error}</span>}
-    </label>
+      {isOpen && (
+        <div className="fixed inset-0 z-[70] flex items-end bg-black/70 p-3 backdrop-blur-sm sm:items-center sm:justify-center sm:p-6" role="presentation" onMouseDown={() => setIsOpen(false)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Select ${label.toLowerCase()}`}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-zinc-700 bg-zinc-900 shadow-2xl sm:max-h-[min(42rem,calc(100dvh-3rem))]"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
+              <div><h3 className="text-base font-black uppercase tracking-wide text-zinc-100">Select token</h3><p className="mt-1 text-xs text-zinc-500">LI.FI-supported assets on this network</p></div>
+              <button type="button" onClick={() => setIsOpen(false)} className="rounded-xl p-2 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close token picker"><X size={18} /></button>
+            </div>
+            <div className="border-b border-zinc-800 p-4">
+              <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" size={16} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tokens" className="w-full rounded-xl border border-zinc-700 bg-zinc-950 py-3 pl-10 pr-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-emerald-500/50" /></div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
+              {isLoading && <div className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-zinc-500"><Loader2 className="animate-spin" size={17} /> Loading LI.FI tokens…</div>}
+              {!isLoading && error && <div className="px-4 py-12 text-center text-sm text-rose-400">{error}</div>}
+              {!isLoading && !error && tokens.length === 0 && <div className="px-4 py-12 text-center text-sm text-zinc-500">No supported tokens found.</div>}
+              {!isLoading && !error && tokens.map((token) => {
+                const isSelected = token.address.toLowerCase() === selectedToken?.address.toLowerCase();
+                return <button key={token.address} type="button" onClick={() => selectToken(token)} className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors ${isSelected ? "bg-emerald-500/10" : "hover:bg-zinc-800"}`}><TokenAvatar token={token} size="sm" /><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><strong className="truncate text-sm text-zinc-100">{token.symbol}</strong>{isSelected && <CheckCircle2 size={14} className="shrink-0 text-emerald-400" />}</span><span className="block truncate text-xs text-zinc-500">{token.name}</span></span>{address && <span className="shrink-0 text-right"><span className="block text-xs font-mono text-zinc-300">{formatWalletBalance(balances[token.address.toLowerCase()], token)}</span><span className="block text-[10px] uppercase tracking-wide text-zinc-600">Balance</span></span>}</button>;
+              })}
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -433,22 +564,7 @@ export function BridgePanel() {
         chains,
         token: fromToken,
       });
-      const nativeGasReserve = getBridgeNativeGasReserve({
-        chainId: fromChainId,
-        chains,
-        token: fromToken,
-      });
-      if (nativeGasReserve && balance < nativeGasReserve.amount) {
-        throw new Error(
-          `Your wallet needs at least ${nativeGasReserve.displayAmount} ${nativeGasReserve.symbol} for network fees before bridging.`,
-        );
-      }
-      if (nativeGasReserve && parsedAmount > balance - nativeGasReserve.amount) {
-        throw new Error(
-          `Leave at least ${nativeGasReserve.displayAmount} ${nativeGasReserve.symbol} in your wallet for network fees.`,
-        );
-      }
-      if (!nativeGasReserve && parsedAmount > balance) {
+      if (parsedAmount > balance) {
         throw new Error(`Amount exceeds your ${fromToken.symbol} balance on the source network.`);
       }
 
@@ -595,8 +711,8 @@ export function BridgePanel() {
               {availableDestinationChains.map((chain) => <option key={chain.id} value={chain.id}>{chain.name}</option>)}
             </select>
           </label>
-          <TokenSelector chainId={fromChainId} label="From token" selectedToken={fromToken} onSelect={setFromToken} />
-          <TokenSelector chainId={toChainId} label="To token" selectedToken={toToken} onSelect={setToToken} />
+          <TokenPicker address={address as Address | undefined} chainId={fromChainId} chains={chains} disabled={isExecuting} label="From token" selectedToken={fromToken} onSelect={setFromToken} />
+          <TokenPicker address={address as Address | undefined} chainId={toChainId} chains={chains} disabled={isExecuting} label="To token" selectedToken={toToken} onSelect={setToToken} />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

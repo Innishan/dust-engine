@@ -16,10 +16,8 @@ import {
   createPublicClient,
   custom,
   encodeFunctionData,
-  formatUnits,
   http,
   numberToHex,
-  parseUnits,
   zeroAddress,
   type Address,
   type Client,
@@ -27,10 +25,6 @@ import {
 
 export const BRIDGE_INTEGRATOR = "dustengine";
 export const BRIDGE_FEE = 0.0025;
-// LI.FI's chain metadata does not include a reliable per-route gas budget before
-// a route is requested. Keep 0.01 of the chain's native asset as a conservative
-// buffer; actual network fees can still be higher or lower.
-const DEFAULT_NATIVE_GAS_RESERVE = "0.01";
 
 type Eip1193Provider = {
   request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -243,35 +237,4 @@ export async function getBridgeTokenBalance({
     throw new Error("The source network returned an invalid ERC-20 balance.");
   }
   return BigInt(result);
-}
-
-export function getBridgeNativeGasReserve({
-  chainId,
-  chains,
-  token,
-}: {
-  chainId: number;
-  chains: ExtendedChain[];
-  token: Token;
-}): { amount: bigint; displayAmount: string; symbol: string } | undefined {
-  if (token.address.toLowerCase() !== zeroAddress) {
-    return undefined;
-  }
-
-  const chain = getChain(chains, chainId);
-  const nativeToken = chain.nativeToken;
-  if (
-    !Number.isInteger(nativeToken.decimals) ||
-    nativeToken.decimals < 2 ||
-    token.decimals !== nativeToken.decimals
-  ) {
-    throw new Error("Unable to safely calculate the native network-fee reserve for this network.");
-  }
-
-  const amount = parseUnits(DEFAULT_NATIVE_GAS_RESERVE, nativeToken.decimals);
-  return {
-    amount,
-    displayAmount: formatUnits(amount, nativeToken.decimals),
-    symbol: nativeToken.symbol,
-  };
 }

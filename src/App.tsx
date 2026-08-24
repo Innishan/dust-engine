@@ -233,7 +233,7 @@ interface TokenInfo {
   selected: boolean;
 }
 
-type ProductSection = "clean" | "lend" | "bridge";
+type ProductSection = "clean" | "bridge" | "lend";
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<ProductSection>("clean");
@@ -324,16 +324,12 @@ function ProductNavigation({
     comingSoon?: boolean;
   }[] = [
     { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
+    { id: "bridge", label: "Bridge", icon: <ArrowRight size={16} /> },
     {
       id: "lend",
       label: "Lend & Borrow",
       icon: <Wrench size={16} />,
       comingSoon: true,
-    },
-    {
-      id: "bridge",
-      label: "Bridge",
-      icon: <ArrowRight size={16} />,
     },
   ];
 
@@ -480,22 +476,6 @@ function EngineCore() {
   const [customAddress, setCustomAddress] = useState("");
   const [isAddingCustom, setIsAddingCustom] = useState(false);
   const [dustThreshold, setDustThreshold] = useState(1.0);
-  const [globalStats, setGlobalStats] = useState<any>(null);
-
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const res = await axios.get("/api/stats");
-        setGlobalStats(res.data);
-      } catch (e) {
-        console.warn("Failed to fetch stats");
-      }
-    };
-    fetchStats();
-    const interval = setInterval(fetchStats, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
   useEffect(() => {
     const checkApi = async () => {
       try {
@@ -1082,40 +1062,6 @@ function EngineCore() {
 
   return (
     <div className="space-y-8">
-      {/* Global Analytics Bar */}
-      {globalStats && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-center">
-            <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-1">
-              Total Dust Cleaned
-            </p>
-            <p className="text-xl font-black text-emerald-500">
-              $
-              {(globalStats.totalDustCleanedUsd || 0).toLocaleString(
-                undefined,
-                { minimumFractionDigits: 2 },
-              )}
-            </p>
-          </div>
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-center">
-            <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-1">
-              Total Swaps
-            </p>
-            <p className="text-xl font-black text-zinc-100">
-              {(globalStats.totalSwaps || 0).toLocaleString()}
-            </p>
-          </div>
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-center">
-            <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-1">
-              Users Served
-            </p>
-            <p className="text-xl font-black text-zinc-100">
-              {(globalStats.usersServed || 0).toLocaleString()}
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Machine Head */}
       <div className="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 overflow-hidden shadow-2xl">
         <div className="absolute top-0 right-0 p-4 opacity-10">
