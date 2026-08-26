@@ -244,7 +244,7 @@ export default function App() {
         <ConnectKitProvider>
           <div className="min-h-screen overflow-x-hidden bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
-              <div className="max-w-4xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="max-w-4xl mx-auto px-2 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
                   <div className="relative">
                     <Gear className="text-emerald-500" speed={5} />
@@ -306,7 +306,7 @@ export default function App() {
 
 function ConnectButton() {
   return (
-    <div className="scale-90 sm:scale-100 origin-right max-w-[150px] sm:max-w-none overflow-hidden flex justify-end">
+    <div className="scale-90 sm:scale-100 origin-right max-w-[150px] sm:max-w-none flex shrink-0 justify-end">
       <ConnectKitButton />
     </div>
   );
