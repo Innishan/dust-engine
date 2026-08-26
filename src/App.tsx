@@ -304,7 +304,7 @@ export default function App() {
 
 function ConnectButton() {
   return (
-    <div className="scale-90 sm:scale-100 origin-right max-w-[120px] sm:max-w-none overflow-hidden flex justify-end">
+    <div className="scale-90 sm:scale-100 origin-right max-w-[150px] sm:max-w-none overflow-hidden flex justify-end">
       <ConnectKitButton />
     </div>
   );
