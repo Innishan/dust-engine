@@ -306,8 +306,24 @@ export default function App() {
 
 function ConnectButton() {
   return (
-    <div className="scale-90 sm:scale-100 origin-right max-w-[150px] sm:max-w-none flex shrink-0 justify-end">
-      <ConnectKitButton />
+    <div className="shrink-0">
+      <ConnectKitButton.Custom>
+        {({ isConnected, show, truncatedAddress }) => (
+          <button
+            type="button"
+            onClick={show}
+            className="flex h-11 max-w-[150px] items-center gap-2 rounded-xl bg-zinc-800 px-3 text-sm font-semibold text-zinc-100 transition-colors hover:bg-zinc-700 sm:max-w-none sm:px-4"
+          >
+            {isConnected ? (
+              <span className="truncate">
+                {truncatedAddress}
+              </span>
+            ) : (
+              <span>Connect Wallet</span>
+            )}
+          </button>
+        )}
+      </ConnectKitButton.Custom>
     </div>
   );
 }
