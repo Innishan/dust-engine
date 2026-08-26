@@ -264,12 +264,14 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
-                  <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full border border-zinc-700">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-xs font-mono text-zinc-400">
-                      BASE MAINNET
-                    </span>
-                  </div>
+                  {activeSection === "clean" && (
+                    <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full border border-zinc-700">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-xs font-mono text-zinc-400">
+                        BASE MAINNET
+                      </span>
+                    </div>
+                  )}
                   <ConnectButton />
                 </div>
               </div>
