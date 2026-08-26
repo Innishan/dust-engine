@@ -535,7 +535,7 @@ export function BridgePanel() {
     }
 
     const normalizedAmount = amount.trim();
-    if (!/^\d+(?:\.\d+)?$/.test(normalizedAmount)) {
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalizedAmount)) {
       setError("Enter a valid decimal amount.");
       return;
     }

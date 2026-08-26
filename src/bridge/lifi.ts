@@ -149,7 +149,16 @@ export function configureBridgeEvmProvider({
 
 export async function getSupportedEvmChains(): Promise<ExtendedChain[]> {
   ensureBridgeLiFiConfig();
-  return getChains({ chainTypes: [ChainType.EVM] });
+
+  const chains = await getChains({
+    chainTypes: [ChainType.EVM],
+  });
+
+  // preloadChains is intentionally disabled, so keep the SDK's
+  // internal chain registry synchronized with the dynamic LI.FI list.
+  lifiConfig.setChains(chains);
+
+  return chains;
 }
 
 export async function getSupportedTokens(
