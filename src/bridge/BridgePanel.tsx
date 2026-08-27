@@ -405,6 +405,35 @@ export function BridgePanel() {
   const [fromToken, setFromToken] = useState<Token>();
   const [toToken, setToToken] = useState<Token>();
   const [amount, setAmount] = useState("");
+  const setMaxAmount = async () => {
+    if (!address || !fromChainId || !fromToken || isExecuting) return;
+
+    try {
+      const balance = await getBridgeTokenBalance({
+        address: address as Address,
+        chainId: fromChainId,
+        chains,
+        token: fromToken,
+      });
+
+      let maxBalance = balance;
+
+      // Keep a small amount of native currency available for gas.
+      if (fromToken.address.toLowerCase() === zeroAddress) {
+        const gasReserve = parseUnits("0.0005", fromToken.decimals);
+        maxBalance = maxBalance > gasReserve ? maxBalance - gasReserve : 0n;
+      }
+
+      setAmount(formatUnits(maxBalance, fromToken.decimals));
+      setRoute(undefined);
+      setExecutionRoute(undefined);
+      setRecoveredRoute(undefined);
+      setError("");
+      setExecutionMessage("");
+    } catch {
+      setError(`Unable to read your ${fromToken.symbol} balance.`);
+    }
+  };
   const [recipient, setRecipient] = useState("");
   const [route, setRoute] = useState<Route>();
   const [executionRoute, setExecutionRoute] = useState<RouteExtended>();
@@ -685,7 +714,9 @@ export function BridgePanel() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block">
-            <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">From network</span>
+            <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">
+              From network
+            </span>
             <select
               value={fromChainId ?? ""}
               onChange={(event) => {
@@ -724,15 +755,32 @@ export function BridgePanel() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block">
-            <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">Amount</span>
-            <input
-              inputMode="decimal"
-              value={amount}
-              onChange={(event) => { setAmount(event.target.value); setRoute(undefined); }}
-              placeholder="0.0"
-              disabled={isExecuting}
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-50"
-            />
+            <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">
+              Amount
+            </span>
+
+            <div className="relative">
+              <input
+                inputMode="decimal"
+                value={amount}
+                onChange={(event) => {
+                  setAmount(event.target.value);
+                  setRoute(undefined);
+                }}
+                placeholder="0.0"
+                disabled={isExecuting}
+                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-3 pr-16 text-sm text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+
+              <button
+                type="button"
+                onClick={() => void setMaxAmount()}
+                disabled={!address || !fromToken || isExecuting}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.12em] text-emerald-400 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                MAX
+              </button>
+            </div>
           </label>
           <label className="block">
             <span className="mb-2 block text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-zinc-500">Recipient <span className="normal-case tracking-normal text-zinc-600">(optional)</span></span>
