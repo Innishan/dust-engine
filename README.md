@@ -212,7 +212,7 @@ The client initializes `@farcaster/miniapp-sdk` and calls `sdk.actions.ready()` 
 
 ## Current status and roadmap
 
-The current implementation provides Base-only wallet connection, token discovery, on-chain balance verification, pricing, threshold-based dust filtering, LI.FI route requests, Permit2 signing, contract execution UI, receipt-based per-token success handling, and Farcaster Mini App metadata. Macro/micro-balance classification, multi-chain support, Lend & Borrow, and Cross-Chain Bridge are not currently implemented.
+The current implementation provides Base-focused wallet connection and dust cleaning, token discovery, on-chain balance verification, pricing, threshold-based dust filtering, LI.FI route requests, Permit2 signing, contract execution UI, receipt-based per-token success handling, Farcaster Mini App metadata, and a live cross-chain bridge powered by LI.FI with dynamic EVM chain support.
 
 Development priorities are:
 
@@ -220,9 +220,8 @@ Development priorities are:
 2. Improve scan performance and RPC efficiency.
 3. Improve pricing and route-quality evaluation.
 4. Improve mobile and Farcaster UX.
-5. Lend & Borrow — **Coming Soon**.
-6. Cross-Chain Bridge — **Coming Soon**.
-7. Expand supported EVM networks.
+5. Expand supported EVM networks and improve cross-chain routing.
+6. Lend & Borrow — **Coming Soon**.
 
 ## Contributing
 
