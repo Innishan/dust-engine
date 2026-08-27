@@ -29,6 +29,7 @@ import {
   RefreshCw,
   Trash2,
   CheckCircle2,
+  Trophy,
   AlertCircle,
   ExternalLink,
   Coins,
@@ -58,6 +59,8 @@ import { twMerge } from "tailwind-merge";
 import { getRoutes, getStepTransaction } from "@lifi/sdk";
 import { sdk } from "@farcaster/miniapp-sdk";
 import { BridgePanel } from "./bridge/BridgePanel";
+import AchievementsPanel from "./achievements/AchievementsPanel";
+import { recordAchievementEvent } from "./achievements/achievementEngine";
 
 sdk.actions.ready();
 
@@ -233,7 +236,7 @@ interface TokenInfo {
   selected: boolean;
 }
 
-type ProductSection = "clean" | "bridge" | "lend";
+type ProductSection = "clean" | "bridge" | "lend" | "achievements";
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<ProductSection>("clean");
@@ -295,6 +298,9 @@ export default function App() {
               {activeSection === "bridge" && (
                 <BridgePanel />
               )}
+              {activeSection === "achievements" && (
+                <AchievementsSection />
+              )}
             </main>
             <AppFooter />
           </div>
@@ -302,6 +308,12 @@ export default function App() {
       </QueryClientProvider>
     </WagmiProvider>
   );
+}
+
+function AchievementsSection() {
+  const { address } = useAccount();
+
+  return <AchievementsPanel address={address} />;
 }
 
 function ConnectButton() {
@@ -344,6 +356,11 @@ function ProductNavigation({
     { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
     { id: "bridge", label: "Bridge", icon: <ArrowRight size={16} /> },
     {
+      id: "achievements",
+      label: "Achievements",
+      icon: <Trophy size={16} />,
+    },
+    {
       id: "lend",
       label: "Lend & Borrow",
       icon: <Wrench size={16} />,
@@ -356,7 +373,7 @@ function ProductNavigation({
       aria-label="Dust Engine product sections"
       className="mb-6 sm:mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1.5 shadow-lg shadow-black/10"
     >
-      <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
+      <div className="grid grid-cols-4 gap-1">
         {sections.map((section) => {
           const isActive = activeSection === section.id;
 
@@ -2306,6 +2323,15 @@ function SwapButton({
           });
         } catch (e) {
           console.warn("Failed to report swap analytics");
+        }
+
+        if (address) {
+          recordAchievementEvent(address, {
+            type: "dust-cleanup",
+            tokenCount: successCount,
+            tokenAddresses: successfulTokenAddresses,
+            valueUsd: actualSwappedValue,
+          });
         }
 
         setSuccessData({ count: successCount, value: actualSwappedValue });

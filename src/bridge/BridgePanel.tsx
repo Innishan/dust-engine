@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useAccount, useConnection } from "wagmi";
 import { useModal } from "connectkit";
+import { recordAchievementEvent } from "../achievements/achievementEngine";
 import { formatUnits, isAddress, parseUnits, zeroAddress, type Address } from "viem";
 import {
   executeRoute,
@@ -632,6 +633,12 @@ export function BridgePanel() {
       if (isComplete) {
         window.localStorage.removeItem(routeRecoveryKey(address as Address));
         setRecoveredRoute(undefined);
+        recordAchievementEvent(address, {
+          type: "bridge-complete",
+          fromChainId: routeToExecute.fromChainId,
+          toChainId: routeToExecute.toChainId,
+          volumeUsd: Number(routeToExecute.fromAmountUSD ?? 0),
+        });
       }
       setExecutionMessage(isComplete ? "Completed" : "Route paused — resume when ready");
     } catch (err) {
