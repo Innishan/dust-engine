@@ -373,7 +373,7 @@ function ProductNavigation({
       aria-label="Dust Engine product sections"
       className="mb-6 sm:mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1.5 shadow-lg shadow-black/10"
     >
-      <div className="grid grid-cols-4 gap-1">
+      <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
         {sections.map((section) => {
           const isActive = activeSection === section.id;
 
@@ -384,7 +384,7 @@ function ProductNavigation({
               onClick={() => onSelect(section.id)}
               aria-pressed={isActive}
               className={cn(
-                "flex min-h-11 items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-left transition-colors",
+                "flex min-h-11 min-w-0 items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left transition-colors",
                 isActive
                   ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/30"
                   : "text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200",
