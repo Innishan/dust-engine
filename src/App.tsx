@@ -12,6 +12,7 @@ import {
   useWaitForTransactionReceipt,
   useSendTransaction,
   useSignTypedData,
+  useSignMessage,
 } from "wagmi";
 import { base } from "wagmi/chains";
 import { injected, coinbaseWallet } from "wagmi/connectors";
@@ -39,6 +40,9 @@ import {
   Wrench,
   Search,
   Twitter,
+  Menu,
+  X,
+  Users,
 } from "lucide-react";
 import {
   formatUnits,
@@ -61,6 +65,8 @@ import { sdk } from "@farcaster/miniapp-sdk";
 import { BridgePanel } from "./bridge/BridgePanel";
 import AchievementsPanel from "./achievements/AchievementsPanel";
 import { recordAchievementEvent } from "./achievements/achievementEngine";
+import AmbassadorPanel from "./ambassador/AmbassadorPanel";
+import LegalPages from "./LegalPages";
 
 sdk.actions.ready();
 
@@ -236,10 +242,32 @@ interface TokenInfo {
   selected: boolean;
 }
 
-type ProductSection = "clean" | "bridge" | "lend" | "achievements";
+type ProductSection = "clean" | "bridge" | "lend" | "achievements" | "ambassador";
 
 export default function App() {
-  const [activeSection, setActiveSection] = useState<ProductSection>("clean");
+  const pathname = window.location.pathname;
+
+  if (pathname === "/terms") {
+    return <LegalPages type="terms" />;
+  }
+
+  if (pathname === "/privacy") {
+    return <LegalPages type="privacy" />;
+  }
+
+  return <DustEngineApp />;
+}
+
+function DustEngineApp() {
+  const [activeSection, setActiveSection] = useState<ProductSection>(() =>
+    new URLSearchParams(window.location.search).get("section") === "ambassador" ? "ambassador" : "clean",
+  );
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const selectSection = (section: ProductSection) => {
+    setActiveSection(section);
+    setMobileMenuOpen(false);
+  };
 
   return (
     <WagmiProvider config={config}>
@@ -247,8 +275,17 @@ export default function App() {
         <ConnectKitProvider>
           <div className="min-h-screen overflow-x-hidden bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
-              <div className="max-w-4xl mx-auto px-2 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setMobileMenuOpen((open) => !open)}
+                    aria-label={mobileMenuOpen ? "Close product menu" : "Open product menu"}
+                    aria-expanded={mobileMenuOpen}
+                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-400 md:hidden"
+                  >
+                    {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+                  </button>
                   <div className="relative">
                     <Gear className="text-emerald-500" speed={5} />
                     <Gear
@@ -280,27 +317,32 @@ export default function App() {
               </div>
             </header>
 
-            <main className="max-w-4xl mx-auto px-4 py-8 sm:py-12">
+            <MobileProductNavigation
+              activeSection={activeSection}
+              open={mobileMenuOpen}
+              onSelect={selectSection}
+            />
+            <ReferralAttribution />
+            <main className="max-w-6xl mx-auto flex min-w-0 gap-6 px-4 py-6 sm:py-8 md:gap-8 md:py-10">
               <ProductNavigation
                 activeSection={activeSection}
-                onSelect={setActiveSection}
+                onSelect={selectSection}
               />
-              <div hidden={activeSection !== "clean"}>
-                <EngineCore />
+              <div className="min-w-0 flex-1">
+                <div hidden={activeSection !== "clean"}>
+                  <EngineCore />
+                </div>
+                {activeSection === "lend" && (
+                  <ComingSoonPanel
+                    icon={<Wrench size={24} strokeWidth={1.75} />}
+                    title="Lend & Borrow"
+                    description="Lending and borrowing tools are in development. This section will become available when the experience is ready."
+                  />
+                )}
+                {activeSection === "bridge" && <BridgePanel />}
+                {activeSection === "achievements" && <AchievementsSection />}
+                {activeSection === "ambassador" && <AmbassadorPanel />}
               </div>
-              {activeSection === "lend" && (
-                <ComingSoonPanel
-                  icon={<Wrench size={24} strokeWidth={1.75} />}
-                  title="Lend & Borrow"
-                  description="Lending and borrowing tools are in development. This section will become available when the experience is ready."
-                />
-              )}
-              {activeSection === "bridge" && (
-                <BridgePanel />
-              )}
-              {activeSection === "achievements" && (
-                <AchievementsSection />
-              )}
             </main>
             <AppFooter />
           </div>
@@ -314,6 +356,40 @@ function AchievementsSection() {
   const { address } = useAccount();
 
   return <AchievementsPanel address={address} />;
+}
+
+function ReferralAttribution() {
+  const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
+
+  useEffect(() => {
+    const referralCode = new URLSearchParams(window.location.search).get("ref")?.trim();
+    if (!referralCode) return;
+
+    // Keep attribution available until a wallet is connected. The server validates the
+    // code and records only a pending attribution; it never creates points from a click.
+    window.localStorage.setItem("dust-engine-referral-code", referralCode);
+  }, []);
+
+  useEffect(() => {
+    const referralCode = window.localStorage.getItem("dust-engine-referral-code");
+    if (!address || !referralCode) return;
+    const attemptKey = `dust-engine-referral-attribution:${address.toLowerCase()}:${referralCode}`;
+    if (window.sessionStorage.getItem(attemptKey)) return;
+    window.sessionStorage.setItem(attemptKey, "attempted");
+
+    void (async () => {
+      try {
+        const nonce = await axios.post("/api/referrals/nonce", { walletAddress: address, referralCode });
+        const signature = await signMessageAsync({ account: address, message: nonce.data.message });
+        await axios.post("/api/referrals/attribute", { walletAddress: address, nonce: nonce.data.nonce, signature });
+      } catch {
+        // The signed proof prevents a third party from attributing someone else's wallet.
+      }
+    })();
+  }, [address, signMessageAsync]);
+
+  return null;
 }
 
 function ConnectButton() {
@@ -356,14 +432,20 @@ function ProductNavigation({
     { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
     { id: "bridge", label: "Bridge", icon: <ArrowRight size={16} /> },
     {
+      id: "lend",
+      label: "Lend & Borrow",
+      icon: <Wrench size={16} />,
+      comingSoon: true,
+    },
+    {
       id: "achievements",
       label: "Achievements",
       icon: <Trophy size={16} />,
     },
     {
-      id: "lend",
-      label: "Lend & Borrow",
-      icon: <Wrench size={16} />,
+      id: "ambassador",
+      label: "Ambassador Program",
+      icon: <Users size={16} />,
       comingSoon: true,
     },
   ];
@@ -371,9 +453,9 @@ function ProductNavigation({
   return (
     <nav
       aria-label="Dust Engine product sections"
-      className="mb-6 sm:mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1.5 shadow-lg shadow-black/10"
+      className="sticky top-24 hidden h-fit w-56 shrink-0 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1.5 shadow-lg shadow-black/10 md:block"
     >
-      <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+      <div className="space-y-1">
         {sections.map((section) => {
           const isActive = activeSection === section.id;
 
@@ -384,7 +466,7 @@ function ProductNavigation({
               onClick={() => onSelect(section.id)}
               aria-pressed={isActive}
               className={cn(
-                "flex min-h-11 min-w-0 items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left transition-colors",
+                "flex min-h-11 w-full min-w-0 items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left transition-colors",
                 isActive
                   ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/30"
                   : "text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200",
@@ -396,12 +478,62 @@ function ProductNavigation({
               </span>
               {section.comingSoon && (
                 <span className="rounded-full border border-zinc-700 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
-                  Soon
+                  {section.id === "ambassador" ? "Season 1" : "Soon"}
                 </span>
               )}
             </button>
           );
         })}
+      </div>
+    </nav>
+  );
+}
+
+function MobileProductNavigation({
+  activeSection,
+  onSelect,
+  open,
+}: {
+  activeSection: ProductSection;
+  onSelect: (section: ProductSection) => void;
+  open: boolean;
+}) {
+  const sections: { id: ProductSection; label: string; badge?: string }[] = [
+    { id: "clean", label: "Clean Dust" },
+    { id: "bridge", label: "Bridge" },
+    { id: "lend", label: "Lend & Borrow", badge: "Soon" },
+    { id: "achievements", label: "Achievements" },
+    { id: "ambassador", label: "Ambassador Program", badge: "Season 1" },
+  ];
+
+  if (!open) return null;
+
+  return (
+    <nav
+      aria-label="Dust Engine mobile product sections"
+      className="fixed inset-x-0 top-[65px] z-40 border-b border-zinc-800 bg-zinc-950/95 p-3 shadow-2xl backdrop-blur-md md:hidden"
+    >
+      <div className="mx-auto grid max-w-6xl gap-1">
+        {sections.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            onClick={() => onSelect(section.id)}
+            className={cn(
+              "flex min-h-12 w-full items-center justify-between rounded-xl px-4 text-left text-sm font-bold uppercase tracking-wide",
+              activeSection === section.id
+                ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/30"
+                : "text-zinc-300 hover:bg-zinc-900",
+            )}
+          >
+            <span className="min-w-0 truncate">{section.label}</span>
+            {section.badge && (
+              <span className="ml-3 shrink-0 rounded-full border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-[9px] font-mono text-zinc-500">
+                {section.badge}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
     </nav>
   );
@@ -479,9 +611,23 @@ function AppFooter() {
             />
           </a>
         </div>
-        <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">
-          © 2026 Dust Engine
-        </span>
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[10px] font-mono uppercase tracking-wider text-zinc-600">
+          <a
+            href="/terms"
+            className="transition-colors hover:text-zinc-300"
+          >
+            Terms
+          </a>
+          <span>·</span>
+          <a
+            href="/privacy"
+            className="transition-colors hover:text-zinc-300"
+          >
+            Privacy
+          </a>
+          <span>·</span>
+          <span>© 2026 Dust Engine</span>
+        </div>
       </div>
     </footer>
   );
