@@ -411,20 +411,61 @@ async function startServer() {
     if (oauthError || !code) return oauthRedirect(res, oauthError === "access_denied" ? "cancelled" : "failed");
     const config = getOAuthConfig();
     if (!config) return oauthRedirect(res, "unavailable");
+
+    const logXOauthFailure = (stage: "token exchange" | "user lookup" | "account linking", error?: unknown, reason?: string) => {
+      const responseData = axios.isAxiosError(error) && error.response?.data && typeof error.response.data === "object"
+        ? error.response.data as Record<string, unknown>
+        : undefined;
+      console.error(`[X OAuth] ${stage} failed`, {
+        ...(reason ? { reason } : {}),
+        ...(axios.isAxiosError(error) && typeof error.response?.status === "number" ? { status: error.response.status } : {}),
+        ...(typeof responseData?.error === "string" ? { xErrorCode: responseData.error } : {}),
+        ...(typeof responseData?.type === "string" ? { xErrorType: responseData.type } : {}),
+        ...(typeof responseData?.error_description === "string" ? { xErrorDescription: responseData.error_description } : {}),
+      });
+    };
+
+    let accessToken: string;
     try {
       const tokenResponse = await axios.post("https://api.x.com/2/oauth2/token", new URLSearchParams({ code, grant_type: "authorization_code", redirect_uri: config.redirectUri, code_verifier: oauthState.code_verifier }).toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` }, timeout: 15000 });
-      const accessToken = tokenResponse.data?.access_token;
-      if (typeof accessToken !== "string") return oauthRedirect(res, "failed");
+      if (typeof tokenResponse.data?.access_token !== "string") {
+        logXOauthFailure("token exchange", undefined, "missing_access_token");
+        return oauthRedirect(res, "failed");
+      }
+      accessToken = tokenResponse.data.access_token;
+      console.log("[X OAuth] token exchange succeeded");
+    } catch (error) {
+      logXOauthFailure("token exchange", error);
+      return oauthRedirect(res, "failed");
+    }
+
+    let xUser: { id: string; username: string; name?: string };
+    try {
       const identityResponse = await axios.get("https://api.x.com/2/users/me", { params: { "user.fields": "username,name" }, headers: { Authorization: `Bearer ${accessToken}` }, timeout: 15000 });
-      const xUser = identityResponse.data?.data;
-      if (!xUser || typeof xUser.id !== "string" || typeof xUser.username !== "string") return oauthRedirect(res, "failed");
+      const responseUser = identityResponse.data?.data;
+      if (!responseUser || typeof responseUser.id !== "string" || typeof responseUser.username !== "string") {
+        logXOauthFailure("user lookup", undefined, "invalid_user_response");
+        return oauthRedirect(res, "failed");
+      }
+      xUser = responseUser;
+      console.log("[X OAuth] user lookup succeeded");
+    } catch (error) {
+      logXOauthFailure("user lookup", error);
+      return oauthRedirect(res, "failed");
+    }
+
+    try {
       const existing = statsDb.prepare(`SELECT id FROM ambassadors WHERE x_user_id = ?`).get(xUser.id) as any;
       if (existing && existing.id !== oauthState.ambassador_id) return oauthRedirect(res, "already-linked");
       const linked = statsDb.prepare(`UPDATE ambassadors SET x_user_id = ?, x_username = ?, x_display_name = ?, x_handle = ?, x_verified_at = ? WHERE id = ? AND status = 'approved'`).run(xUser.id, xUser.username, typeof xUser.name === "string" ? xUser.name : null, xUser.username, new Date().toISOString(), oauthState.ambassador_id);
-      if (linked.changes !== 1) return oauthRedirect(res, "failed");
+      if (linked.changes !== 1) {
+        logXOauthFailure("account linking", undefined, "ambassador_not_updated");
+        return oauthRedirect(res, "failed");
+      }
+      console.log("[X OAuth] account linked successfully");
       return oauthRedirect(res, "linked");
-    } catch {
-      // Authorization codes and tokens are intentionally never logged.
+    } catch (error) {
+      logXOauthFailure("account linking", error);
       return oauthRedirect(res, "failed");
     }
   });
