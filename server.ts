@@ -433,7 +433,12 @@ async function startServer() {
         return oauthRedirect(res, "failed");
       }
       accessToken = tokenResponse.data.access_token;
-      console.log("[X OAuth] token exchange succeeded");
+      console.log("[X OAuth] token exchange succeeded", {
+        tokenType: tokenResponse.data?.token_type,
+        scope: tokenResponse.data?.scope,
+        expiresIn: tokenResponse.data?.expires_in,
+        hasRefreshToken: typeof tokenResponse.data?.refresh_token === "string",
+      });
     } catch (error) {
       logXOauthFailure("token exchange", error);
       return oauthRedirect(res, "failed");
