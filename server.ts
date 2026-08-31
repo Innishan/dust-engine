@@ -7,9 +7,11 @@ import { fileURLToPath } from 'url';
 import cors from "cors";
 import Database from "better-sqlite3";
 import crypto from "crypto";
-import { verifyMessage, isAddress, createPublicClient, http } from "viem";
+import { verifyMessage, isAddress, isHash, createPublicClient, http } from "viem";
 import { base } from "viem/chains";
+import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { verifyCleanDustTransaction } from "./server/ambassadorCleanVerifier";
+import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 
 dotenv.config();
 
@@ -28,11 +30,43 @@ const AMBASSADOR_POINTS = {
 } as const;
 const X_PRODUCTION_CALLBACK = "https://dustengine.xyz/api/auth/x/callback";
 const AMBASSADOR_SESSION_COOKIE = "dust_engine_ambassador_session";
+const BRIDGE_VERIFICATION_WINDOW_MS = 60_000;
+const BRIDGE_VERIFICATION_IP_LIMIT = 30;
+const BRIDGE_VERIFICATION_TX_HASH_LIMIT = 4;
+const BRIDGE_VERIFICATION_LIMIT_MAX_ENTRIES = 10_000;
+
+type RateLimitEntry = {
+  count: number;
+  resetAt: number;
+};
 
 async function startServer() {
   const app = express();
   const configuredPort = Number.parseInt(process.env.PORT || "4000", 10);
   const PORT = Number.isFinite(configuredPort) && configuredPort > 0 ? configuredPort : 4000;
+  const bridgeVerificationIpLimits = new Map<string, RateLimitEntry>();
+  const bridgeVerificationTxHashLimits = new Map<string, RateLimitEntry>();
+
+  const consumeBridgeVerificationLimit = (limits: Map<string, RateLimitEntry>, key: string, limit: number, now = Date.now()) => {
+    const existing = limits.get(key);
+    if (!existing && limits.size >= BRIDGE_VERIFICATION_LIMIT_MAX_ENTRIES) {
+      for (const [storedKey, entry] of limits) {
+        if (entry.resetAt <= now) limits.delete(storedKey);
+      }
+      if (limits.size >= BRIDGE_VERIFICATION_LIMIT_MAX_ENTRIES) {
+        return { allowed: false, retryAfterSeconds: Math.ceil(BRIDGE_VERIFICATION_WINDOW_MS / 1000) };
+      }
+    }
+    if (!existing || existing.resetAt <= now) {
+      limits.set(key, { count: 1, resetAt: now + BRIDGE_VERIFICATION_WINDOW_MS });
+      return { allowed: true, retryAfterSeconds: 0 };
+    }
+    if (existing.count >= limit) {
+      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)) };
+    }
+    existing.count += 1;
+    return { allowed: true, retryAfterSeconds: 0 };
+  };
   
   app.use(cors());
   app.use(express.json());
@@ -598,6 +632,62 @@ async function startServer() {
       kind: "clean_completed",
       quantity: verification.quantity,
       completedAt: verification.completedAt,
+      reviewStatus: "approved",
+    });
+    return res.status(result.status).json(result.payload);
+  });
+
+  app.post("/api/ambassadors/verify-bridge", async (req, res) => {
+    const txHash = req.body?.txHash;
+    const fromChainId = req.body?.fromChainId;
+    const toChainId = req.body?.toChainId;
+    if (typeof txHash !== "string" || !isHash(txHash) || !Number.isInteger(fromChainId) || fromChainId <= 0 || !Number.isInteger(toChainId) || toChainId <= 0) {
+      return res.status(400).json({ error: "Invalid bridge transaction" });
+    }
+
+    const now = Date.now();
+    const ipAddress = req.ip || req.socket.remoteAddress || "unknown";
+    const ipLimit = consumeBridgeVerificationLimit(bridgeVerificationIpLimits, ipAddress, BRIDGE_VERIFICATION_IP_LIMIT, now);
+    if (!ipLimit.allowed) {
+      res.set("Retry-After", String(ipLimit.retryAfterSeconds));
+      return res.status(429).json({ error: "Too many bridge verification requests. Please try again shortly." });
+    }
+    const txHashLimit = consumeBridgeVerificationLimit(bridgeVerificationTxHashLimits, txHash.toLowerCase(), BRIDGE_VERIFICATION_TX_HASH_LIMIT, now);
+    if (!txHashLimit.allowed) {
+      res.set("Retry-After", String(txHashLimit.retryAfterSeconds));
+      return res.status(429).json({ error: "Too many bridge verification requests. Please try again shortly." });
+    }
+
+    let status;
+    try {
+      status = await getStatus({ txHash, fromChain: fromChainId, toChain: toChainId });
+    } catch {
+      return res.status(502).json({ error: "LI.FI verification is temporarily unavailable" });
+    }
+
+    if (status.status !== "DONE" || status.substatus !== "COMPLETED") {
+      return res.status(409).json({ error: "Bridge transaction is not completed" });
+    }
+    if (!("transactionId" in status) || !status.transactionId || !("fromAddress" in status) || !("metadata" in status) || !("sending" in status) || !("receiving" in status)) {
+      return res.status(400).json({ error: "Invalid LI.FI status response" });
+    }
+
+    const fullStatus = status as FullStatusData;
+    if (!isAddress(fullStatus.fromAddress) || fullStatus.metadata.integrator !== BRIDGE_INTEGRATOR || fullStatus.sending.txHash.toLowerCase() !== txHash.toLowerCase() || fullStatus.sending.chainId !== fromChainId || fullStatus.receiving.chainId !== toChainId) {
+      return res.status(400).json({ error: "LI.FI status does not match this bridge transaction" });
+    }
+    const bridgeVolumeUsd = Number(fullStatus.sending.amountUSD);
+    if (!Number.isFinite(bridgeVolumeUsd) || bridgeVolumeUsd <= 0) {
+      return res.status(400).json({ error: "LI.FI status does not include a valid source USD amount" });
+    }
+    const ambassador = getApprovedAmbassadorIdByWallet.get(fullStatus.fromAddress) as { id?: string } | undefined;
+    if (!ambassador?.id) return res.status(403).json({ error: "Bridge sender is not an approved ambassador" });
+
+    const result = persistAmbassadorActivity({
+      id: `bridge-lifi:${fullStatus.transactionId}`,
+      ambassadorId: ambassador.id,
+      kind: "bridge_completed",
+      bridgeVolumeUsd,
       reviewStatus: "approved",
     });
     return res.status(result.status).json(result.payload);

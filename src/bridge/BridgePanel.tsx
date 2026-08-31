@@ -14,8 +14,9 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useAccount, useConnection } from "wagmi";
 import { useModal } from "connectkit";
+import axios from "axios";
 import { recordAchievementEvent } from "../achievements/achievementEngine";
-import { formatUnits, isAddress, parseUnits, zeroAddress, type Address } from "viem";
+import { formatUnits, isAddress, isHash, parseUnits, zeroAddress, type Address } from "viem";
 import {
   executeRoute,
   getRoutes,
@@ -63,6 +64,30 @@ function routeRecoveryKey(address: Address) {
 
 function isRouteComplete(route: RouteExtended) {
   return route.steps.length > 0 && route.steps.every((step) => step.execution?.status === "DONE");
+}
+
+type BridgeVerificationTarget = {
+  txHash: string;
+  fromChainId: number;
+  toChainId: number;
+};
+
+function completedSourceBridgeProcess(route: RouteExtended): BridgeVerificationTarget | undefined {
+  const candidates = route.steps.flatMap((step) => {
+    if (step.action.fromChainId !== route.fromChainId || step.action.toChainId !== route.toChainId) return [];
+    return (step.execution?.process ?? [])
+      .filter((process) => process.type === "CROSS_CHAIN" && process.status === "DONE" && process.chainId === step.action.fromChainId && typeof process.txHash === "string" && isHash(process.txHash))
+      .map((process) => ({
+        txHash: process.txHash as string,
+        fromChainId: step.action.fromChainId,
+        toChainId: step.action.toChainId,
+      }));
+  });
+
+  // A route can contain swaps before or after its cross-chain step. Only submit an
+  // unambiguous source-to-final-destination bridge, so one route cannot create
+  // multiple Ambassador verification requests or rewards.
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function isStoredBridgeRoute(value: unknown): value is StoredBridgeRoute {
@@ -668,6 +693,16 @@ export function BridgePanel() {
           toChainId: routeToExecute.toChainId,
           volumeUsd: Number(routeToExecute.fromAmountUSD ?? 0),
         });
+        const sourceProcess = completedSourceBridgeProcess(result);
+        if (sourceProcess?.txHash) {
+          void axios.post("/api/ambassadors/verify-bridge", {
+            txHash: sourceProcess.txHash,
+            fromChainId: sourceProcess.fromChainId,
+            toChainId: sourceProcess.toChainId,
+          }).catch(() => {
+            // Ambassador verification is secondary and must never change bridge success.
+          });
+        }
       }
       setExecutionMessage(isComplete ? "Completed" : "Route paused — resume when ready");
     } catch (err) {
