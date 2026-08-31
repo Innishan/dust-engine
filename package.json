@@ -9,6 +9,7 @@
     "start": "tsx server.ts",
     "ambassador:seed": "tsx scripts/seed-ambassador.ts",
     "ambassador:verify-clean:test": "tsx scripts/test-ambassador-clean-verifier.ts",
+    "ambassador:registration:test": "tsx scripts/test-ambassador-registration.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

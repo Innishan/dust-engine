@@ -51,9 +51,9 @@ async function startServer() {
   });
 
   // Stats
-  const statsDatabasePath = fs.existsSync("/data")
+  const statsDatabasePath = process.env.DUST_ENGINE_DATABASE_PATH || (fs.existsSync("/data")
     ? "/data/dust-engine.sqlite"
-    : path.join(__dirname, "dust-engine.sqlite");
+    : path.join(__dirname, "dust-engine.sqlite"));
   const statsDb = new Database(statsDatabasePath);
   // SQLite does not enforce declared foreign keys unless this is enabled per connection.
   statsDb.pragma("foreign_keys = ON");
@@ -129,6 +129,14 @@ async function startServer() {
       used_at TEXT,
       FOREIGN KEY (ambassador_id) REFERENCES ambassadors(id)
     );
+    CREATE TABLE IF NOT EXISTS ambassador_registration_nonces (
+      nonce TEXT PRIMARY KEY,
+      wallet_address TEXT NOT NULL,
+      message TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS ambassador_sessions (
       id TEXT PRIMARY KEY,
       ambassador_id TEXT NOT NULL,
@@ -139,6 +147,7 @@ async function startServer() {
     CREATE TABLE IF NOT EXISTS ambassador_oauth_states (
       state TEXT PRIMARY KEY,
       ambassador_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
       code_verifier TEXT NOT NULL,
       expires_at INTEGER NOT NULL,
       used_at TEXT,
@@ -198,6 +207,7 @@ async function startServer() {
   addColumnIfMissing("ambassadors", "x_username", "x_username TEXT");
   addColumnIfMissing("ambassadors", "x_display_name", "x_display_name TEXT");
   addColumnIfMissing("ambassadors", "x_verified_at", "x_verified_at TEXT");
+  addColumnIfMissing("ambassador_oauth_states", "session_id", "session_id TEXT");
   addColumnIfMissing("ambassador_activity_events", "quantity", "quantity REAL NOT NULL DEFAULT 0");
   addColumnIfMissing("ambassador_activity_events", "bridge_volume_usd", "bridge_volume_usd REAL NOT NULL DEFAULT 0");
   addColumnIfMissing("ambassador_activity_events", "x_post_content", "x_post_content TEXT");
@@ -227,6 +237,9 @@ async function startServer() {
       x_user_id AS xUserId, x_username AS xUsername, x_display_name AS xDisplayName, activated_at AS activatedAt
     FROM ambassadors WHERE lower(wallet_address) = lower(?) AND status = 'approved'
   `);
+  const getAmbassadorStatusByWallet = statsDb.prepare(`
+    SELECT id, status FROM ambassadors WHERE lower(wallet_address) = lower(?)
+  `);
 
   const getOAuthConfig = () => {
     const clientId = process.env.X_CLIENT_ID;
@@ -246,17 +259,19 @@ async function startServer() {
   const createOpaqueToken = () => crypto.randomBytes(32).toString("base64url");
   const createPkceChallenge = (verifier: string) => crypto.createHash("sha256").update(verifier).digest("base64url");
   const oauthRedirect = (res: express.Response, result: string) => res.redirect(302, `/?section=ambassador&x=${result}`);
-  const getSessionAmbassador = (req: express.Request) => {
+  const getAuthenticatedAmbassadorSession = (req: express.Request) => {
     const cookie = String(req.headers.cookie || "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${AMBASSADOR_SESSION_COOKIE}=`));
     if (!cookie) return null;
     const sessionId = decodeURIComponent(cookie.slice(AMBASSADOR_SESSION_COOKIE.length + 1));
-    return statsDb.prepare(`
+    const ambassador = statsDb.prepare(`
       SELECT a.id, a.display_name AS displayName, a.x_handle AS xHandle, a.referral_code AS referralCode,
         a.x_user_id AS xUserId, a.x_username AS xUsername, a.x_display_name AS xDisplayName, a.activated_at AS activatedAt
       FROM ambassador_sessions s JOIN ambassadors a ON a.id = s.ambassador_id
       WHERE s.id = ? AND s.expires_at > ? AND a.status = 'approved'
     `).get(sessionId, Date.now()) as any;
+    return ambassador ? { sessionId, ambassador } : null;
   };
+  const getSessionAmbassador = (req: express.Request) => getAuthenticatedAmbassadorSession(req)?.ambassador || null;
   const setAmbassadorSession = (res: express.Response, ambassadorId: string) => {
     const id = createOpaqueToken();
     const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
@@ -266,6 +281,8 @@ async function startServer() {
   const getApprovedAmbassadorIdByWallet = statsDb.prepare(`
     SELECT id FROM ambassadors WHERE lower(wallet_address) = lower(?) AND status = 'approved'
   `);
+  const createAmbassadorId = () => `amb_${crypto.randomUUID()}`;
+  const createReferralCode = () => `AMB${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
 
   type ActivityEvent = { ambassadorId: string; kind: string; quantity: number; bridgeVolumeUsd: number; xQualityScore: number; xImpressions: number; reviewStatus: string; completedAt: string };
   const getLeaderboardEntries = () => {
@@ -293,7 +310,10 @@ async function startServer() {
       }
       const points = (coinsSwept * AMBASSADOR_POINTS.CLEAN_DUST_POINTS_PER_COIN) + (bridgeVolumeUsd * AMBASSADOR_POINTS.BRIDGE_POINTS_PER_USD) + (referrals * AMBASSADOR_POINTS.QUALIFIED_REFERRAL_POINTS) + xPoints;
       const firstVerifiedActivityAt = activity.map((event) => event.completedAt).sort()[0] || ambassador.createdAt;
-      return { ambassadorId: ambassador.id, creator: ambassador.creator, xHandle: ambassador.xUsername || ambassador.xHandle, points: Math.round(points), referrals, coinsSwept, bridgeVolumeUsd, xContentPosts, firstVerifiedActivityAt };
+      // Clean Dust is verified as a token count only. Never estimate its USD value
+      // from client analytics; verified USD volume currently consists of Bridge only.
+      const volumeUsd = bridgeVolumeUsd;
+      return { ambassadorId: ambassador.id, creator: ambassador.creator, xHandle: ambassador.xUsername || ambassador.xHandle, points: Math.round(points), referrals, coinsSwept, bridgeVolumeUsd, volumeUsd, xContentPosts, firstVerifiedActivityAt };
     });
     // Stable ties: points, then bridge volume, then earliest verified activity.
     return entries.sort((a, b) => b.points - a.points || b.bridgeVolumeUsd - a.bridgeVolumeUsd || a.firstVerifiedActivityAt.localeCompare(b.firstVerifiedActivityAt) || a.ambassadorId.localeCompare(b.ambassadorId))
@@ -308,11 +328,16 @@ async function startServer() {
     const walletAddress = String(req.body.walletAddress || "");
     if (!isAddress(walletAddress)) return res.status(400).json({ error: "Invalid wallet address" });
     const ambassador = getApprovedAmbassadorByWallet.get(walletAddress) as any;
-    if (!ambassador) return res.status(404).json({ error: "Approved ambassador not found" });
+    const existing = getAmbassadorStatusByWallet.get(walletAddress) as { id: string; status: string } | undefined;
+    if (existing && existing.status !== "approved") return res.status(403).json({ error: "This ambassador profile is not eligible" });
     const nonce = crypto.randomBytes(24).toString("hex");
     const expiresAt = Date.now() + 10 * 60 * 1000;
     const message = `Dust Engine Ambassador Activation\nWallet: ${walletAddress.toLowerCase()}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`;
-    statsDb.prepare(`INSERT INTO ambassador_auth_nonces (nonce, ambassador_id, wallet_address, message, expires_at) VALUES (?, ?, ?, ?, ?)`).run(nonce, ambassador.id, walletAddress.toLowerCase(), message, expiresAt);
+    if (ambassador) {
+      statsDb.prepare(`INSERT INTO ambassador_auth_nonces (nonce, ambassador_id, wallet_address, message, expires_at) VALUES (?, ?, ?, ?, ?)`).run(nonce, ambassador.id, walletAddress.toLowerCase(), message, expiresAt);
+    } else {
+      statsDb.prepare(`INSERT INTO ambassador_registration_nonces (nonce, wallet_address, message, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`).run(nonce, walletAddress.toLowerCase(), message, expiresAt, new Date().toISOString());
+    }
     res.json({ nonce, message });
   });
 
@@ -320,15 +345,29 @@ async function startServer() {
     const { walletAddress, nonce, signature } = req.body;
     if (!isAddress(walletAddress) || typeof nonce !== "string" || typeof signature !== "string") return res.status(400).json({ error: "Invalid activation request" });
     const auth = statsDb.prepare(`SELECT * FROM ambassador_auth_nonces WHERE nonce = ? AND wallet_address = ? AND used_at IS NULL`).get(nonce, walletAddress.toLowerCase()) as any;
-    if (!auth || auth.expires_at < Date.now()) return res.status(400).json({ error: "Activation request expired" });
-    const valid = await verifyMessage({ address: walletAddress, message: auth.message, signature: signature as `0x${string}` });
+    const registrationAuth = auth ? null : statsDb.prepare(`SELECT * FROM ambassador_registration_nonces WHERE nonce = ? AND wallet_address = ? AND used_at IS NULL`).get(nonce, walletAddress.toLowerCase()) as any;
+    const activationAuth = auth || registrationAuth;
+    if (!activationAuth || activationAuth.expires_at < Date.now()) return res.status(400).json({ error: "Activation request expired" });
+    const valid = await verifyMessage({ address: walletAddress, message: activationAuth.message, signature: signature as `0x${string}` });
     if (!valid) return res.status(401).json({ error: "Invalid signature" });
     const ambassador = statsDb.transaction(() => {
       const now = new Date().toISOString();
-      const claimed = statsDb.prepare(`UPDATE ambassador_auth_nonces SET used_at = ? WHERE nonce = ? AND wallet_address = ? AND used_at IS NULL AND expires_at > ?`)
+      const nonceTable = auth ? "ambassador_auth_nonces" : "ambassador_registration_nonces";
+      const claimed = statsDb.prepare(`UPDATE ${nonceTable} SET used_at = ? WHERE nonce = ? AND wallet_address = ? AND used_at IS NULL AND expires_at > ?`)
         .run(now, nonce, walletAddress.toLowerCase(), Date.now());
       if (claimed.changes !== 1) return null;
-      statsDb.prepare(`UPDATE ambassadors SET activated_at = ? WHERE id = ? AND status = 'approved'`).run(now, auth.ambassador_id);
+      if (auth) {
+        statsDb.prepare(`UPDATE ambassadors SET activated_at = ? WHERE id = ? AND status = 'approved'`).run(now, auth.ambassador_id);
+      } else {
+        const existing = getAmbassadorStatusByWallet.get(walletAddress) as { id: string; status: string } | undefined;
+        if (existing && existing.status !== "approved") return null;
+        if (!existing) {
+          statsDb.prepare(`INSERT INTO ambassadors (id, display_name, wallet_address, referral_code, status, created_at, activated_at) VALUES (?, ?, ?, ?, 'approved', ?, ?)`)
+            .run(createAmbassadorId(), `Ambassador ${walletAddress.slice(2, 8)}`, walletAddress.toLowerCase(), createReferralCode(), now, now);
+        } else {
+          statsDb.prepare(`UPDATE ambassadors SET activated_at = ? WHERE id = ?`).run(now, existing.id);
+        }
+      }
       return getApprovedAmbassadorByWallet.get(walletAddress) as any;
     })();
     if (!ambassador) return res.status(400).json({ error: "Activation request expired or already used" });
@@ -340,17 +379,17 @@ async function startServer() {
     const ambassador = getSessionAmbassador(req);
     if (!ambassador) return res.status(401).json({ error: "Ambassador session required" });
     const entry = getLeaderboardEntries().find((item) => item.ambassadorId === ambassador.id);
-    res.json({ profile: { ...ambassador, xVerified: Boolean(ambassador.xUserId), ...(entry || { points: 0, referrals: 0, coinsSwept: 0, bridgeVolumeUsd: 0, xContentPosts: 0 }) } });
+    res.json({ profile: { ...ambassador, xVerified: Boolean(ambassador.xUserId), ...(entry || { points: 0, referrals: 0, coinsSwept: 0, bridgeVolumeUsd: 0, volumeUsd: 0, xContentPosts: 0 }) } });
   });
 
   app.get("/api/auth/x/start", (req, res) => {
-    const ambassador = getSessionAmbassador(req);
+    const authenticatedSession = getAuthenticatedAmbassadorSession(req);
     const config = getOAuthConfig();
-    if (!ambassador || !ambassador.activatedAt) return oauthRedirect(res, "wallet-required");
+    if (!authenticatedSession || !authenticatedSession.ambassador.activatedAt) return oauthRedirect(res, "wallet-required");
     if (!config) return oauthRedirect(res, "unavailable");
     const state = createOpaqueToken();
     const codeVerifier = createOpaqueToken();
-    statsDb.prepare(`INSERT INTO ambassador_oauth_states (state, ambassador_id, code_verifier, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`).run(state, ambassador.id, codeVerifier, Date.now() + 10 * 60 * 1000, new Date().toISOString());
+    statsDb.prepare(`INSERT INTO ambassador_oauth_states (state, ambassador_id, session_id, code_verifier, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(state, authenticatedSession.ambassador.id, authenticatedSession.sessionId, codeVerifier, Date.now() + 10 * 60 * 1000, new Date().toISOString());
     const authorizationUrl = new URL("https://x.com/i/oauth2/authorize");
     authorizationUrl.search = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: config.redirectUri, scope: "users.read", state, code_challenge: createPkceChallenge(codeVerifier), code_challenge_method: "S256" }).toString();
     res.redirect(302, authorizationUrl.toString());
@@ -363,7 +402,11 @@ async function startServer() {
     if (!state || state.length > 256) return oauthRedirect(res, "invalid-state");
     const oauthState = statsDb.prepare(`SELECT * FROM ambassador_oauth_states WHERE state = ? AND used_at IS NULL AND expires_at > ?`).get(state, Date.now()) as any;
     if (!oauthState) return oauthRedirect(res, "invalid-state");
-    const claimed = statsDb.prepare(`UPDATE ambassador_oauth_states SET used_at = ? WHERE state = ? AND used_at IS NULL`).run(new Date().toISOString(), state);
+    const authenticatedSession = getAuthenticatedAmbassadorSession(req);
+    if (!authenticatedSession || authenticatedSession.sessionId !== oauthState.session_id || authenticatedSession.ambassador.id !== oauthState.ambassador_id) {
+      return oauthRedirect(res, "invalid-state");
+    }
+    const claimed = statsDb.prepare(`UPDATE ambassador_oauth_states SET used_at = ? WHERE state = ? AND used_at IS NULL AND expires_at > ?`).run(new Date().toISOString(), state, Date.now());
     if (claimed.changes !== 1) return oauthRedirect(res, "invalid-state");
     if (oauthError || !code) return oauthRedirect(res, oauthError === "access_denied" ? "cancelled" : "failed");
     const config = getOAuthConfig();

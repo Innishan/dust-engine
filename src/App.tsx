@@ -510,7 +510,7 @@ function MobileProductNavigation({
     { id: "bridge", label: "Bridge" },
     { id: "lend", label: "Lend & Borrow", badge: "Soon" },
     { id: "achievements", label: "Achievements" },
-    { id: "ambassador", label: "Ambassador Program" },
+    { id: "ambassador", label: "Ambassador Program", badge: "Season 1" },
   ];
 
   if (!open) return null;
@@ -535,7 +535,7 @@ function MobileProductNavigation({
           >
             <span className="min-w-0 truncate">{section.label}</span>
             {section.badge && (
-              <span className="ml-3 shrink-0 rounded-full border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-[9px] font-mono text-zinc-500">
+              <span className="ml-3 shrink-0 whitespace-nowrap rounded-full border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-[9px] font-mono text-zinc-500">
                 {section.badge}
               </span>
             )}
@@ -663,7 +663,7 @@ function EngineCore() {
   const [log, setLog] = useState<string[]>([]);
   const [customAddress, setCustomAddress] = useState("");
   const [isAddingCustom, setIsAddingCustom] = useState(false);
-  const [dustThreshold, setDustThreshold] = useState(1.0);
+  const [dustThreshold, setDustThreshold] = useState(3.0);
   useEffect(() => {
     const checkApi = async () => {
       try {
