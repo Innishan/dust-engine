@@ -503,7 +503,7 @@ function MobileProductNavigation({
     { id: "bridge", label: "Bridge" },
     { id: "lend", label: "Lend & Borrow", badge: "Soon" },
     { id: "achievements", label: "Achievements" },
-    { id: "ambassador", label: "Ambassador Program", badge: "Season 1" },
+    { id: "ambassador", label: "Ambassador Program" },
   ];
 
   if (!open) return null;
