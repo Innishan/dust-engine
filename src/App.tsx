@@ -428,6 +428,7 @@ function ProductNavigation({
     label: string;
     icon: ReactNode;
     comingSoon?: boolean;
+    badge?: string;
   }[] = [
     { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
     { id: "bridge", label: "Bridge", icon: <ArrowRight size={16} /> },
@@ -446,7 +447,7 @@ function ProductNavigation({
       id: "ambassador",
       label: "Ambassador Program",
       icon: <Users size={16} />,
-      comingSoon: true,
+      badge: "Season 1",
     },
   ];
 
@@ -477,10 +478,16 @@ function ProductNavigation({
                 {section.label}
               </span>
               {section.comingSoon && (
-                <span className="rounded-full border border-zinc-700 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
-                  {section.id === "ambassador" ? "Season 1" : "Soon"}
+                <span className="shrink-0 whitespace-nowrap rounded-full border border-zinc-700 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
+                  Soon
                 </span>
-              )}
+               )}
+
+               {section.badge && (
+                 <span className="shrink-0 whitespace-nowrap rounded-full border border-zinc-700 bg-zinc-950/70 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
+                   {section.badge}
+                 </span>
+               )}
             </button>
           );
         })}
