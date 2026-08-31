@@ -391,7 +391,7 @@ async function startServer() {
     const codeVerifier = createOpaqueToken();
     statsDb.prepare(`INSERT INTO ambassador_oauth_states (state, ambassador_id, session_id, code_verifier, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(state, authenticatedSession.ambassador.id, authenticatedSession.sessionId, codeVerifier, Date.now() + 10 * 60 * 1000, new Date().toISOString());
     const authorizationUrl = new URL("https://x.com/i/oauth2/authorize");
-    authorizationUrl.search = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: config.redirectUri, scope: "users.read", state, code_challenge: createPkceChallenge(codeVerifier), code_challenge_method: "S256" }).toString();
+    authorizationUrl.search = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: config.redirectUri, scope: "tweet.read users.read", state, code_challenge: createPkceChallenge(codeVerifier), code_challenge_method: "S256" }).toString();
     res.redirect(302, authorizationUrl.toString());
   });
 
