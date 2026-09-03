@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAccount, useSignMessage } from "wagmi";
 import axios from "axios";
-import { Check, CheckCircle2, Copy, ExternalLink, RefreshCw, ShieldCheck, Trophy } from "lucide-react";
+import { BookOpen, Check, CheckCircle2, Copy, ExternalLink, RefreshCw, ShieldCheck, Trophy, X } from "lucide-react";
 
 interface LeaderboardEntry {
   rank: number;
@@ -36,6 +36,7 @@ export default function AmbassadorPanel() {
   const [isActivating, setIsActivating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   const loadLeaderboard = useCallback(async (refresh = false) => {
     refresh ? setIsRefreshing(true) : setIsLoading(true);
@@ -103,14 +104,24 @@ export default function AmbassadorPanel() {
   return <section className="min-w-0 space-y-6">
     <div className="relative overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl sm:p-8">
       <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-emerald-500/10 blur-3xl" />
-      <div className="relative max-w-2xl"><p className="text-[11px] font-mono font-bold uppercase tracking-[0.2em] text-emerald-400">Ambassador Program · Season 1</p><h2 className="mt-3 text-3xl font-black uppercase italic tracking-tight text-zinc-100 sm:text-4xl">$20,000 <span className="text-emerald-400">USDC</span> Prize Pool</h2><p className="mt-4 max-w-xl text-sm leading-6 text-zinc-400 sm:text-base">Every $1M in qualifying Bridge + Clean Dust volume adds another $5,000 USDC to the prize pool.</p><p className="mt-5 text-xs font-black uppercase tracking-[0.16em] text-zinc-200">Top 50 will share the final prize pool</p></div>
+      <div className="relative flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between sm:gap-8"><div className="max-w-2xl"><p className="text-[11px] font-mono font-bold uppercase tracking-[0.2em] text-emerald-400">Ambassador Program · Season 1</p><h2 className="mt-3 text-3xl font-black uppercase italic tracking-tight text-zinc-100 sm:text-4xl">$20,000 <span className="text-emerald-400">USDC</span> Prize Pool</h2><p className="mt-4 max-w-xl text-sm leading-6 text-zinc-400 sm:text-base">Every $1M in qualifying Bridge + Clean Dust volume adds another $5,000 USDC to the prize pool.</p><p className="mt-5 text-xs font-black uppercase tracking-[0.16em] text-zinc-200">Top 50 will share the final prize pool</p></div><button type="button" onClick={() => setRulesOpen(true)} className="inline-flex w-fit shrink-0 items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-[11px] font-black uppercase tracking-widest text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/20 hover:text-emerald-200"><BookOpen size={15} /> Rules</button></div>
     </div>
 
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
       <Leaderboard entries={entries} isLoading={isLoading} isRefreshing={isRefreshing} updatedAt={updatedAt} onRefresh={() => void loadLeaderboard(true)} />
       <ProfileCard connected={isConnected} profile={profile} isActivating={isActivating} onActivate={() => void activateWallet()} onConnectX={() => { window.location.assign("/api/auth/x/start"); }} message={message} />
     </div>
+    {rulesOpen && <RulesModal onClose={() => setRulesOpen(false)} />}
   </section>;
+}
+
+function RulesModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:p-6" role="presentation" onMouseDown={onClose}><section role="dialog" aria-modal="true" aria-labelledby="ambassador-x-rules" className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-3xl border border-emerald-500/25 bg-zinc-900 p-5 shadow-2xl shadow-black/60 sm:max-h-[calc(100dvh-3rem)] sm:p-7" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] text-emerald-400">Ambassador Program</p><h3 id="ambassador-x-rules" className="mt-2 text-xl font-black uppercase italic tracking-tight text-zinc-100">How to earn X points</h3></div><button type="button" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-700 text-zinc-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300" aria-label="Close rules"><X size={17} /></button></div><ul className="mt-6 space-y-3 text-sm leading-6 text-zinc-300"><li>• Connect your verified X account.</li><li>• Post naturally about Dust Engine.</li><li>• Useful, original, genuine content earns more.</li><li>• Avoid spam, copied posts, and empty mentions.</li><li>• One post can earn once.</li><li>• Quality is automatically evaluated.</li><li>• Points are calculated automatically.</li><li>• No manual submission is required.</li></ul><div className="mt-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">Qualifying posts are detected automatically after your X account is verified.</div><button type="button" onClick={onClose} className="mt-6 w-full rounded-xl bg-emerald-500 px-4 py-3 text-xs font-black uppercase tracking-wide text-zinc-950 transition-colors hover:bg-emerald-400">Got it</button></section></div>;
 }
 
 function Leaderboard({ entries, isLoading, isRefreshing, updatedAt, onRefresh }: { entries: LeaderboardEntry[]; isLoading: boolean; isRefreshing: boolean; updatedAt: string | null; onRefresh: () => void }) {

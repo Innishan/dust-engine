@@ -12,6 +12,8 @@ import { base } from "viem/chains";
 import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { verifyCleanDustTransaction } from "./server/ambassadorCleanVerifier";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
+import { XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { evaluateXContent } from "./server/ambassadorXQuality";
 
 dotenv.config();
 
@@ -265,6 +267,7 @@ async function startServer() {
   if (!duplicateXPost) {
     statsDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS ambassador_x_content_post_unique ON ambassador_activity_events(x_post_id) WHERE kind = 'x_content' AND x_post_id IS NOT NULL;");
   }
+  initializeXContentTables(statsDb);
 
   const getApprovedAmbassadorByWallet = statsDb.prepare(`
     SELECT id, display_name AS displayName, x_handle AS xHandle, referral_code AS referralCode,
@@ -605,9 +608,34 @@ async function startServer() {
     if (!adminToken || req.header("x-ambassador-admin-token") !== adminToken) {
       return res.status(403).json({ error: "Forbidden" });
     }
+    if (req.body?.kind === "x_content") {
+      return res.status(403).json({ error: "X content activity is recorded by the automatic server processor only" });
+    }
     const result = persistAmbassadorActivity(req.body || {});
     return res.status(result.status).json(result.payload);
   });
+
+  const configuredQualityThreshold = Number.parseInt(process.env.X_CONTENT_QUALITY_THRESHOLD || "40", 10);
+  const xContentQualityThreshold = Number.isInteger(configuredQualityThreshold) && configuredQualityThreshold >= 0 && configuredQualityThreshold <= 100
+    ? configuredQualityThreshold
+    : 40;
+  const configuredRecoveryInterval = Number.parseInt(process.env.X_CONTENT_RECOVERY_INTERVAL_MS || "600000", 10);
+  const xContentRecoveryIntervalMs = Number.isInteger(configuredRecoveryInterval) && configuredRecoveryInterval >= 60_000
+    ? configuredRecoveryInterval
+    : 600_000;
+  const xBearerToken = process.env.X_BEARER_TOKEN;
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const xContentWorker = xBearerToken ? (() => {
+    const client = new XApiClient(xBearerToken);
+    const processor = new XContentProcessor({
+      db: statsDb,
+      client,
+      qualityThreshold: xContentQualityThreshold,
+      evaluate: ({ content, context }) => evaluateXContent({ content, context, apiKey: geminiApiKey, model: process.env.GEMINI_MODEL }),
+      recordApprovedActivity: (activity) => persistAmbassadorActivity(activity),
+    });
+    return new XContentWorker({ db: statsDb, client, processor, recoveryIntervalMs: xContentRecoveryIntervalMs });
+  })() : null;
 
   app.post("/api/internal/ambassador/verify-clean", async (req, res) => {
     const adminToken = process.env.AMBASSADOR_ADMIN_TOKEN;
@@ -923,12 +951,31 @@ async function startServer() {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health: http://0.0.0.0:${PORT}/api/health`);
     console.log(`Stats: http://0.0.0.0:${PORT}/api/stats`);
     console.log(`Scan: http://0.0.0.0:${PORT}/api/scan/0x...`);
+    if (!xContentWorker) {
+      console.warn("[Ambassador X] automatic worker disabled because X_BEARER_TOKEN is not configured");
+    } else if (!geminiApiKey) {
+      console.warn("[Ambassador X] automatic worker is running, but awards will retry until GEMINI_API_KEY is configured");
+      xContentWorker.start();
+    } else {
+      xContentWorker.start();
+    }
   });
+  let shuttingDown = false;
+  const stopXContentWorker = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void (async () => {
+      if (xContentWorker) await xContentWorker.stop();
+      httpServer.close();
+    })();
+  };
+  process.once("SIGINT", stopXContentWorker);
+  process.once("SIGTERM", stopXContentWorker);
 }
 
 startServer().catch(console.error);
