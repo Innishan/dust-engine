@@ -1,13 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { Trophy, Lock, Sparkles } from "lucide-react";
 import {
   ACHIEVEMENTS,
   type AchievementId,
 } from "./achievementDefinitions";
-import {
-  loadAchievementState,
-} from "./achievementStorage";
+import { emptyAchievementState, type AchievementState } from "./achievementState";
 import {
   getAchievementProgress,
 } from "./achievementEngine";
@@ -18,10 +16,20 @@ export default function AchievementsPanel() {
 
   const [showUnlockedOnly, setShowUnlockedOnly] = useState(false);
 
-  const state = useMemo(
-    () => (address ? loadAchievementState(address) : null),
-    [address],
-  );
+  const [state, setState] = useState<AchievementState | null>(null);
+
+  useEffect(() => {
+    if (!address) {
+      setState(null);
+      return;
+    }
+    let active = true;
+    void fetch(`/api/achievements/${address}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unable to load achievements")))
+      .then((next: AchievementState) => { if (active) setState(next); })
+      .catch(() => { if (active) setState(emptyAchievementState()); });
+    return () => { active = false; };
+  }, [address]);
 
   const unlocked = new Set<AchievementId>(
     state?.unlocked ?? [],
@@ -129,16 +137,7 @@ export default function AchievementsPanel() {
         <div className="grid gap-3 sm:grid-cols-2">
           {visibleAchievements.map((achievement) => {
             const progress = getAchievementProgress(
-              state ?? {
-                cleanupCount: 0,
-                cleanedTokenCount: 0,
-                uniqueTokenAddresses: [],
-                totalCleanedUsd: 0,
-                largestCleanupUsd: 0,
-                bridgeCount: 0,
-                bridgeChainIds: [],
-                unlocked: [],
-              },
+              state ?? emptyAchievementState(),
               achievement.id,
             );
 

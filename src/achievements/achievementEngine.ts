@@ -2,10 +2,7 @@ import {
   ACHIEVEMENTS,
   type AchievementId,
 } from "./achievementDefinitions";
-import {
-  updateAchievementState,
-  type AchievementState,
-} from "./achievementStorage";
+import { emptyAchievementState, type AchievementState } from "./achievementState";
 
 export type AchievementEvent =
   | {
@@ -26,8 +23,8 @@ export type AchievementUpdate = {
   newlyUnlocked: AchievementId[];
 };
 
-function calculateUnlocked(state: AchievementState): AchievementId[] {
-  const unlocked = new Set<AchievementId>(state.unlocked);
+export function calculateUnlocked(state: AchievementState): AchievementId[] {
+  const unlocked = new Set<AchievementId>();
 
   if (state.cleanupCount >= 1) {
     unlocked.add("first-cleanup");
@@ -72,27 +69,15 @@ function calculateUnlocked(state: AchievementState): AchievementId[] {
   return Array.from(unlocked);
 }
 
-export function recordAchievementEvent(
-  address: string,
-  event: AchievementEvent,
-): AchievementUpdate {
-  let newlyUnlocked: AchievementId[] = [];
+export function deriveAchievementState(events: AchievementEvent[]): AchievementState {
+  const next = emptyAchievementState();
 
-  const state = updateAchievementState(address, (current) => {
-    const previousUnlocked = new Set(current.unlocked);
-
-    const next: AchievementState = {
-      ...current,
-    };
-
+  for (const event of events) {
     if (event.type === "dust-cleanup") {
       next.cleanupCount += 1;
       next.cleanedTokenCount += Math.max(0, event.tokenCount);
       next.totalCleanedUsd += Math.max(0, event.valueUsd);
-      next.largestCleanupUsd = Math.max(
-        next.largestCleanupUsd,
-        Math.max(0, event.valueUsd),
-      );
+      next.largestCleanupUsd = Math.max(next.largestCleanupUsd, Math.max(0, event.valueUsd));
 
       if (event.tokenAddresses) {
         const existing = new Set(
@@ -107,7 +92,7 @@ export function recordAchievementEvent(
 
         next.uniqueTokenAddresses = Array.from(existing);
       }
-    }
+      }
 
     if (event.type === "bridge-complete") {
       next.bridgeCount += 1;
@@ -120,22 +105,9 @@ export function recordAchievementEvent(
 
       next.bridgeChainIds = Array.from(chainIds);
     }
-
-    const nextUnlocked = calculateUnlocked(next);
-
-    newlyUnlocked = nextUnlocked.filter(
-      (id) => !previousUnlocked.has(id),
-    );
-
-    next.unlocked = nextUnlocked;
-
-    return next;
-  });
-
-  return {
-    state,
-    newlyUnlocked,
-  };
+  }
+  next.unlocked = calculateUnlocked(next);
+  return next;
 }
 
 export function getAchievementProgress(

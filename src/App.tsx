@@ -64,7 +64,6 @@ import { getRoutes, getStepTransaction } from "@lifi/sdk";
 import { sdk } from "@farcaster/miniapp-sdk";
 import { BridgePanel } from "./bridge/BridgePanel";
 import AchievementsPanel from "./achievements/AchievementsPanel";
-import { recordAchievementEvent } from "./achievements/achievementEngine";
 import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
 
@@ -1788,6 +1787,7 @@ function SwapButton({
       let successCount = 0;
       let actualSwappedValue = 0;
       const successfulTokenAddresses: string[] = [];
+      let verifiedCleanTxHash: string | undefined;
 
       if (selectedTokens.length === 0) {
         console.log("❌ NO TOKENS SELECTED");
@@ -2424,6 +2424,7 @@ function SwapButton({
                 }
 
                 if (successCount > 0) {
+                  verifiedCleanTxHash = hash;
                   addLog(
                     `✅ ${successCount} of ${validTokens.length} token${
                       validTokens.length === 1 ? "" : "s"
@@ -2478,12 +2479,11 @@ function SwapButton({
           console.warn("Failed to report swap analytics");
         }
 
-        if (address) {
-          recordAchievementEvent(address, {
-            type: "dust-cleanup",
-            tokenCount: successCount,
-            tokenAddresses: successfulTokenAddresses,
-            valueUsd: actualSwappedValue,
+        if (verifiedCleanTxHash) {
+          void axios.post("/api/achievements/verify-clean", {
+            txHash: verifiedCleanTxHash,
+          }).catch(() => {
+            // Verification is asynchronous and never changes transaction success.
           });
         }
 

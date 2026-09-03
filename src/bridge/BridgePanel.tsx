@@ -15,7 +15,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useAccount, useConnection } from "wagmi";
 import { useModal } from "connectkit";
 import axios from "axios";
-import { recordAchievementEvent } from "../achievements/achievementEngine";
 import { formatUnits, isAddress, isHash, parseUnits, zeroAddress, type Address } from "viem";
 import {
   executeRoute,
@@ -687,14 +686,15 @@ export function BridgePanel() {
       if (isComplete) {
         window.localStorage.removeItem(routeRecoveryKey(address as Address));
         setRecoveredRoute(undefined);
-        recordAchievementEvent(address, {
-          type: "bridge-complete",
-          fromChainId: routeToExecute.fromChainId,
-          toChainId: routeToExecute.toChainId,
-          volumeUsd: Number(routeToExecute.fromAmountUSD ?? 0),
-        });
         const sourceProcess = completedSourceBridgeProcess(result);
         if (sourceProcess?.txHash) {
+          void axios.post("/api/achievements/verify-bridge", {
+            txHash: sourceProcess.txHash,
+            fromChainId: sourceProcess.fromChainId,
+            toChainId: sourceProcess.toChainId,
+          }).catch(() => {
+            // Achievement verification never changes bridge execution success.
+          });
           void axios.post("/api/ambassadors/verify-bridge", {
             txHash: sourceProcess.txHash,
             fromChainId: sourceProcess.fromChainId,

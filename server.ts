@@ -10,7 +10,8 @@ import crypto from "crypto";
 import { verifyMessage, isAddress, isHash, createPublicClient, http } from "viem";
 import { base } from "viem/chains";
 import { getStatus, type FullStatusData } from "@lifi/sdk";
-import { verifyCleanDustTransaction } from "./server/ambassadorCleanVerifier";
+import { verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
+import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 import { XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
@@ -108,6 +109,7 @@ async function startServer() {
       users_served
     ) VALUES (1, 210, 142, 105);
   `);
+  initializeAchievementTables(statsDb);
 
   const getStats = statsDb.prepare(`
     SELECT
@@ -268,6 +270,109 @@ async function startServer() {
     statsDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS ambassador_x_content_post_unique ON ambassador_activity_events(x_post_id) WHERE kind = 'x_content' AND x_post_id IS NOT NULL;");
   }
   initializeXContentTables(statsDb);
+
+  const hasOnlyBodyKeys = (body: unknown, keys: string[]) => {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const received = Object.keys(body as Record<string, unknown>);
+    return received.length === keys.length && received.every((key) => keys.includes(key));
+  };
+  const configuredAchievementConfirmations = Number.parseInt(process.env.ACHIEVEMENT_MIN_CONFIRMATIONS || process.env.AMBASSADOR_MIN_CONFIRMATIONS || "3", 10);
+  const achievementMinimumConfirmations = Number.isInteger(configuredAchievementConfirmations) && configuredAchievementConfirmations > 0
+    ? configuredAchievementConfirmations
+    : 3;
+  const persistAchievementEvent = statsDb.transaction((event: {
+    id: string;
+    walletAddress: string;
+    kind: "dust_cleanup" | "bridge_complete";
+    source: "base_rpc" | "lifi_status";
+    txHash: string;
+    sourceChainId?: number;
+    destinationChainId?: number;
+    cleanedTokenCount?: number;
+    cleanedTokenAddresses?: string[];
+    cleanValueUsd?: number;
+    bridgeVolumeUsd?: number;
+    completedAt: string;
+  }) => {
+    statsDb.prepare(`INSERT OR IGNORE INTO achievement_events (
+      id, wallet_address, kind, source, tx_hash, source_chain_id, destination_chain_id,
+      cleaned_token_count, cleaned_token_addresses_json, clean_value_usd, bridge_volume_usd, completed_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(event.id, event.walletAddress.toLowerCase(), event.kind, event.source, event.txHash.toLowerCase(), event.sourceChainId ?? null, event.destinationChainId ?? null,
+        event.cleanedTokenCount ?? 0, JSON.stringify(event.cleanedTokenAddresses ?? []), event.cleanValueUsd ?? 0, event.bridgeVolumeUsd ?? 0, event.completedAt, new Date().toISOString());
+    return getAchievementState(statsDb, event.walletAddress);
+  });
+
+  // Achievement persistence is intentionally independent from the Ambassador
+  // program: these endpoints accept only transaction identity and verify it.
+  app.get("/api/achievements/:walletAddress", (req, res) => {
+    const walletAddress = req.params.walletAddress;
+    if (!isAddress(walletAddress)) return res.status(400).json({ error: "Invalid wallet address" });
+    return res.json(getAchievementState(statsDb, walletAddress));
+  });
+
+  app.post("/api/achievements/verify-clean", async (req, res) => {
+    if (!hasOnlyBodyKeys(req.body, ["txHash"]) || typeof req.body.txHash !== "string") {
+      return res.status(400).json({ error: "Only txHash is accepted" });
+    }
+    const rpcUrl = process.env.BASE_RPC_URL;
+    if (!rpcUrl) return res.status(503).json({ error: "Clean Dust verification is not configured" });
+    const verification = await verifyCleanDustAchievementTransaction({
+      txHash: req.body.txHash,
+      client: createPublicClient({ chain: base, transport: http(rpcUrl) }),
+      minimumConfirmations: achievementMinimumConfirmations,
+    });
+    if (!verification.ok) return res.status(400).json({ error: verification.reason });
+    return res.json({ state: persistAchievementEvent({
+      id: `achievement:${verification.eventId}`,
+      walletAddress: verification.walletAddress,
+      kind: "dust_cleanup",
+      source: "base_rpc",
+      txHash: req.body.txHash,
+      sourceChainId: 8453,
+      cleanedTokenCount: verification.quantity,
+      cleanedTokenAddresses: verification.tokenAddresses,
+      // The Base transaction does not contain an authoritative USD valuation.
+      cleanValueUsd: 0,
+      completedAt: verification.completedAt,
+    }) });
+  });
+
+  app.post("/api/achievements/verify-bridge", async (req, res) => {
+    if (!hasOnlyBodyKeys(req.body, ["txHash", "fromChainId", "toChainId"])) {
+      return res.status(400).json({ error: "Only txHash, fromChainId, and toChainId are accepted" });
+    }
+    const { txHash, fromChainId, toChainId } = req.body;
+    if (typeof txHash !== "string" || !isHash(txHash) || !Number.isInteger(fromChainId) || fromChainId <= 0 || !Number.isInteger(toChainId) || toChainId <= 0) {
+      return res.status(400).json({ error: "Invalid bridge transaction" });
+    }
+    let status;
+    try {
+      status = await getStatus({ txHash, fromChain: fromChainId, toChain: toChainId });
+    } catch {
+      return res.status(502).json({ error: "LI.FI verification is temporarily unavailable" });
+    }
+    if (status.status !== "DONE" || status.substatus !== "COMPLETED" || !("transactionId" in status) || !status.transactionId || !("fromAddress" in status) || !("metadata" in status) || !("sending" in status) || !("receiving" in status)) {
+      return res.status(409).json({ error: "Bridge transaction is not completed" });
+    }
+    const fullStatus = status as FullStatusData;
+    if (!isAddress(fullStatus.fromAddress) || fullStatus.metadata.integrator !== BRIDGE_INTEGRATOR || fullStatus.sending.txHash.toLowerCase() !== txHash.toLowerCase() || fullStatus.sending.chainId !== fromChainId || fullStatus.receiving.chainId !== toChainId) {
+      return res.status(400).json({ error: "LI.FI status does not match this bridge transaction" });
+    }
+    const bridgeVolumeUsd = Number(fullStatus.sending.amountUSD);
+    if (!Number.isFinite(bridgeVolumeUsd) || bridgeVolumeUsd <= 0) return res.status(400).json({ error: "LI.FI status does not include a valid source USD amount" });
+    return res.json({ state: persistAchievementEvent({
+      id: `achievement:bridge:${txHash.toLowerCase()}`,
+      walletAddress: fullStatus.fromAddress,
+      kind: "bridge_complete",
+      source: "lifi_status",
+      txHash,
+      sourceChainId: fromChainId,
+      destinationChainId: toChainId,
+      bridgeVolumeUsd,
+      completedAt: new Date().toISOString(),
+    }) });
+  });
 
   const getApprovedAmbassadorByWallet = statsDb.prepare(`
     SELECT id, display_name AS displayName, x_handle AS xHandle, referral_code AS referralCode,
