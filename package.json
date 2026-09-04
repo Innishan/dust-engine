@@ -12,6 +12,7 @@
     "ambassador:registration:test": "tsx scripts/test-ambassador-registration.ts",
     "ambassador:x-content:test": "tsx scripts/test-ambassador-x-content.ts",
     "achievements:test": "tsx scripts/test-achievements.ts",
+    "token-discovery:test": "tsx scripts/test-token-discovery.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

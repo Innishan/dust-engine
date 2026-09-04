@@ -734,19 +734,28 @@ function EngineCore() {
         console.log("BACKEND RAW RESPONSE:", backendRes.data);
         console.log("TOKEN COUNT:", backendRes.data?.tokens?.length);
 
-        if (backendRes.data?.tokens) {
+        if (backendRes.data?.status === "discovery_unavailable") {
+          addLog("SCANNER UNAVAILABLE: RETRY IN A MOMENT");
+          return;
+        }
+
+        if (backendRes.data?.status === "success" || backendRes.data?.status === "partial_success") {
           discoveredTokens = [
             ...discoveredTokens,
-            ...backendRes.data.tokens.map((t: any) => ({
-              ...t,
-              balance: t.balance || "0",
-            })),
+            // Discovery providers supply addresses only. The existing Base RPC
+            // multicall below remains the sole source of wallet balances.
+            ...backendRes.data.tokens.map((t: any) => ({ address: t.address, source: t.sources?.join(",") })),
           ];
           addLog(`BACKEND: DISCOVERED ${backendRes.data.tokens.length} ASSETS`);
         }
       } catch (e: any) {
         console.warn("Backend scan failed", e);
-        addLog(`BACKEND SCAN FAILED: ${e.message}`);
+        if (e.response?.status === 503 || e.response?.data?.status === "discovery_unavailable") {
+          addLog("SCANNER UNAVAILABLE: RETRY IN A MOMENT");
+          return;
+        }
+        addLog("SCANNER UNAVAILABLE: RETRY IN A MOMENT");
+        return;
       }
 
       // 1.2 1inch discovery disabled

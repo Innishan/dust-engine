@@ -15,6 +15,7 @@ import { getAchievementState, initializeAchievementTables } from "./server/achie
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 import { XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
+import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 
 dotenv.config();
 
@@ -826,7 +827,8 @@ async function startServer() {
     return res.status(result.status).json(result.payload);
   });
 
-  // Scan endpoint - YOUR ORIGINAL FUNCTION
+  // Token discovery only supplies candidate contract addresses. The client remains
+  // authoritative for balances through its existing Base RPC multicall.
   app.get("/api/scan/:address", async (req, res) => {
     const { address } = req.params;
     
@@ -834,93 +836,12 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid address" });
     }
 
-    const tokens = new Map<string, any>();
-
-    const mergeToken = (candidate: any) => {
-      const key = candidate.address.toLowerCase();
-      const existing = tokens.get(key);
-
-      if (!existing) {
-        tokens.set(key, candidate);
-        return;
-      }
-
-      tokens.set(key, {
-        ...existing,
-        address: existing.address || candidate.address,
-        symbol: existing.symbol || candidate.symbol,
-        name: existing.name || candidate.name,
-        decimals: existing.decimals ?? candidate.decimals,
-        balance:
-          existing.balance && existing.balance !== "0"
-            ? existing.balance
-            : candidate.balance,
-        priceUsd:
-          existing.priceUsd > 0 ? existing.priceUsd : candidate.priceUsd,
-        source:
-          existing.source === candidate.source
-            ? existing.source
-            : `${existing.source},${candidate.source}`,
-      });
-    };
-
     try {
-      // 1. Blockscout Balances
-      try {
-        console.log("Fetching from Blockscout...");
-
-        const blockscoutRes = await axios.get(
-          `https://base.blockscout.com/api/v2/addresses/${address}/token-balances`,
-          { timeout: 30000 }
-        );
-
-        console.log("Blockscout response:", blockscoutRes.data);
-        const items = Array.isArray(blockscoutRes.data) ? blockscoutRes.data : (blockscoutRes.data.items || []);
-        console.log("Parsed items count:", items.length);
-        items.forEach((t: any) => {
-          if (t.token?.address_hash) {
-            mergeToken({
-              symbol: t.token.symbol,
-              name: t.token.name,
-              address: t.token.address_hash,
-              decimals: parseInt(t.token.decimals || '18'),
-              balance: t.value || "0", // 🔥 THIS IS CRITICAL
-              priceUsd: parseFloat(t.token.exchange_rate || "0"),
-              source: 'indexer'
-            });
-          }
-        });
-      } catch (e: any) {
-        console.warn("Blockscout balances failed:", e.message);
-      }
-      
-      // 2. Blockscout Transfers
-      try {
-        const historyRes = await axios.get(`https://base.blockscout.com/api/v2/addresses/${address}/token-transfers`, {
-          params: { limit: 50 },
-          timeout: 30000
-        });
-        const historyItems = Array.isArray(historyRes.data) ? historyRes.data : (historyRes.data.items || []);
-        historyItems.forEach((t: any) => {
-          if (t.token?.address_hash && t.token?.type === 'ERC-20') {
-            mergeToken({
-              symbol: t.token.symbol,
-              name: t.token.name,
-              address: t.token.address_hash,
-              decimals: parseInt(t.token.decimals || '18'),
-              balance: "0",
-              priceUsd: parseFloat(t.token.exchange_rate || "0"),
-              source: 'history'
-            });
-          }
-        });
-      } catch (e: any) {
-        if (e.response?.status !== 422) {
-          console.warn("Blockscout transfers failed:", e.message);
-        }
-      }
-
-      res.json({ tokens: Array.from(tokens.values()) });
+      const discovery = await discoverBaseTokenCandidates(address, {
+        alchemyApiKey: process.env.ALCHEMY_API_KEY,
+        moralisApiKey: process.env.MORALIS_API_KEY,
+      });
+      return res.status(discoveryHttpStatus(discovery)).json(discovery);
     } catch (error: any) {
       console.error("Critical backend scan failure:", error.message);
       res.status(500).json({ error: "Internal server error during scan" });
