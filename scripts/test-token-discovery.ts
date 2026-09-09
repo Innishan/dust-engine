@@ -70,6 +70,23 @@ async function run() {
   });
   assert.equal(partial.status, "partial_success");
   assert.equal(partial.tokens[0]?.address, a);
+
+  // A capped provider still supplies usable candidates, even if every fully
+  // completed fallback provider fails.
+  const cappedAlchemy = await discoverBaseTokenCandidates(wallet, {
+    alchemyApiKey: "test", maxPages: 1,
+    request: async (config) => {
+      if (String(config.url).includes("alchemy")) {
+        return { data: { result: { tokenBalances: [{ contractAddress: a }], pageKey: "next" } } };
+      }
+      throw Object.assign(new Error("500"), { response: { status: 500 } });
+    },
+  });
+  assert.equal(cappedAlchemy.status, "partial_success");
+  assert.equal(cappedAlchemy.discovery.sources.find((source) => source.source === "alchemy")?.status, "capped");
+  assert.equal(cappedAlchemy.tokens[0]?.address, a);
+  assert.equal(discoveryHttpStatus(cappedAlchemy), 200);
+
   const unavailable = await discoverBaseTokenCandidates(wallet, {
     alchemyApiKey: "test", moralisApiKey: "test", request: sequence([new Error("failure")]),
   });
