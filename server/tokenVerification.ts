@@ -1,7 +1,7 @@
 import { getAddress, isAddress, zeroAddress, type Address } from "viem";
 
 export const MAX_VERIFICATION_TOKENS = 2_000;
-export const BALANCE_CHUNK_SIZE = 100;
+export const BALANCE_CHUNK_SIZE = 50;
 export const METADATA_CHUNK_SIZE = 50;
 
 const NATIVE_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
