@@ -251,7 +251,7 @@ export async function discoverBaseTokenCandidates(address: string, config: Token
   ]);
   const enabled = results.filter((result) => result.status !== "disabled");
   const successful = results.filter((result) => result.status === "success");
-  const usable = results.filter((result) => result.status === "success" || (result.status === "capped" && result.candidates.length > 0));
+  const usable = results.filter((result) => result.candidates.length > 0);
   const status: DiscoveryResponse["status"] = successful.length === enabled.length && enabled.length > 0
     ? "success"
     : usable.length > 0 ? "partial_success" : "discovery_unavailable";

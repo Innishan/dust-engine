@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { formatUnits } from "viem";
 import {
   discoverAlchemyTokens,
   discoverBaseTokenCandidates,
@@ -87,6 +89,29 @@ async function run() {
   assert.equal(cappedAlchemy.tokens[0]?.address, a);
   assert.equal(discoveryHttpStatus(cappedAlchemy), 200);
 
+  // Retained candidates from a timed-out later page remain usable discovery.
+  let alchemyCalls = 0;
+  const timedOutAlchemy = await discoverBaseTokenCandidates(wallet, {
+    alchemyApiKey: "test",
+    request: async (config) => {
+      if (String(config.url).includes("alchemy")) {
+        if (alchemyCalls++ === 0) return { data: { result: { tokenBalances: [{ contractAddress: a }], pageKey: "next" } } };
+        throw Object.assign(new Error("timeout"), { code: "ECONNABORTED" });
+      }
+      throw Object.assign(new Error("500"), { response: { status: 500 } });
+    },
+  });
+  assert.equal(timedOutAlchemy.status, "partial_success");
+  assert.equal(timedOutAlchemy.discovery.sources.find((source) => source.source === "alchemy")?.status, "timeout");
+  assert.equal(timedOutAlchemy.tokens[0]?.address, a);
+
+  const timedOutWithoutCandidates = await discoverBaseTokenCandidates(wallet, {
+    alchemyApiKey: "test",
+    request: async () => { throw Object.assign(new Error("timeout"), { code: "ECONNABORTED" }); },
+  });
+  assert.equal(timedOutWithoutCandidates.status, "discovery_unavailable");
+  assert.equal(discoveryHttpStatus(timedOutWithoutCandidates), 503);
+
   const unavailable = await discoverBaseTokenCandidates(wallet, {
     alchemyApiKey: "test", moralisApiKey: "test", request: sequence([new Error("failure")]),
   });
@@ -105,6 +130,17 @@ async function run() {
   // G. Provider balances are intentionally absent: only RPC-derived balances can filter candidates.
   const rpcBalances = [0n, 1n]; // provider-reported values are never supplied to this calculation
   assert.deepEqual([a, b].filter((_, index) => rpcBalances[index] > 0n), [b]);
+
+  // Metadata is generic and comes from Base RPC. Non-18-decimal tokens are
+  // formatted with their resolved decimals, while failed decimals reads never
+  // manufacture a fallback balance. A symbol read failure remains displayable.
+  assert.equal(formatUnits(188854n, 6), "0.188854");
+  assert.equal(formatUnits(1500000000000000000n, 18), "1.5");
+  const scannerSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(scannerSource, /functionName: "decimals"/);
+  assert.match(scannerSource, /functionName: "symbol"/);
+  assert.match(scannerSource, /if \(!metadata\) \{\s+metadataFailures \+= 1;\s+return;/);
+  assert.match(scannerSource, /symbol: .*\?\s*symbolResult\.result\s*:\s*"\?\?\?"/s);
 
   // H. A genuine all-success empty result is distinct from unavailable discovery.
   const empty = await discoverBaseTokenCandidates(wallet, {

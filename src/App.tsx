@@ -241,6 +241,22 @@ interface TokenInfo {
   selected: boolean;
 }
 
+function resolveErc20Metadata(
+  decimalsResult: { status?: string; result?: unknown } | undefined,
+  symbolResult: { status?: string; result?: unknown } | undefined,
+): { decimals: number; symbol: string } | undefined {
+  const decimals = Number(decimalsResult?.result);
+  if (decimalsResult?.status !== "success" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    return undefined;
+  }
+  return {
+    decimals,
+    symbol: symbolResult?.status === "success" && typeof symbolResult.result === "string" && symbolResult.result
+      ? symbolResult.result
+      : "???",
+  };
+}
+
 type ProductSection = "clean" | "bridge" | "lend" | "achievements" | "ambassador";
 
 export default function App() {
@@ -863,7 +879,6 @@ function EngineCore() {
             ...t,
             symbol: t.symbol || "???",
             address: t.address as Address,
-            decimals: t.decimals ?? 18, // don't override if exists
           };
         });
 
@@ -933,10 +948,52 @@ function EngineCore() {
 
       addLog(`BALANCES DETECTED: ${tokensWithBalance.length} ASSETS`);
 
-      // ✅ FIX: convert balances properly using decimals
-      const normalizedBalances = tokensWithBalance.map((token, i) => {
-        const raw = balancesForTokens[i];
-        const decimals = token.decimals ?? 18;
+      // Provider discovery supplies addresses only. Resolve ERC-20 metadata from
+      // Base RPC before formatting values; balances above remain authoritative.
+      const metadataByAddress = new Map<string, { decimals: number; symbol: string }>();
+      const metadataChunkSize = 50;
+      let metadataFailures = 0;
+      for (let i = 0; i < tokensWithBalance.length; i += metadataChunkSize) {
+        const chunk = tokensWithBalance.slice(i, i + metadataChunkSize);
+        try {
+          const client = publicClient || baseRpcClient;
+          const results = await (client as any).multicall({
+            allowFailure: true,
+            contracts: chunk.flatMap((token) => [
+              { address: token.address, abi: ERC20_ABI, functionName: "decimals" },
+              { address: token.address, abi: ERC20_ABI, functionName: "symbol" },
+            ]),
+          });
+          chunk.forEach((token, index) => {
+            const decimalsResult = results[index * 2];
+            const symbolResult = results[index * 2 + 1];
+            const metadata = resolveErc20Metadata(decimalsResult, symbolResult);
+            if (!metadata) {
+              metadataFailures += 1;
+              return;
+            }
+            metadataByAddress.set(token.address.toLowerCase(), metadata);
+          });
+        } catch (metadataError) {
+          console.warn("Token metadata multicall failed", metadataError);
+          metadataFailures += chunk.length;
+        }
+      }
+
+      const tokensWithMetadata: typeof validTokens = [];
+      const balancesWithMetadata: bigint[] = [];
+      tokensWithBalance.forEach((token, index) => {
+        const metadata = metadataByAddress.get(token.address.toLowerCase());
+        if (!metadata) return;
+        tokensWithMetadata.push({ ...token, ...metadata });
+        balancesWithMetadata.push(balancesForTokens[index]);
+      });
+      if (metadataFailures > 0) addLog(`METADATA UNAVAILABLE FOR ${metadataFailures} ASSETS`);
+      addLog(`METADATA RESOLVED: ${tokensWithMetadata.length} ASSETS`);
+
+      const normalizedBalances = tokensWithMetadata.map((token, i) => {
+        const raw = balancesWithMetadata[i];
+        const decimals = token.decimals;
 
         const balance = Number(raw) / Math.pow(10, decimals);
 
@@ -952,23 +1009,23 @@ function EngineCore() {
 
       console.log(
         "🧪 TOKENS WITH BALANCE:",
-        tokensWithBalance.map((t) => t.symbol),
+        tokensWithMetadata.map((t) => t.symbol),
       );
       console.log(
         "🧪 BALANCES:",
-        balancesForTokens.map((b) => b.toString()),
+        balancesWithMetadata.map((b) => b.toString()),
       );
 
-      if (tokensWithBalance.length === 0) {
-        addLog("NO BALANCES DETECTED");
+      if (tokensWithMetadata.length === 0) {
+        addLog("NO TOKENS WITH USABLE ON-CHAIN METADATA");
         setIsAnalyzing(false);
         return;
       }
 
       // --- Phase 3: Price Fetching & Verification ---
       console.time("⏱️ PRICE FETCH");
-      addLog(`FETCHING PRICES FOR ${tokensWithBalance.length} ASSETS...`);
-      const priceAddresses = tokensWithBalance
+      addLog(`FETCHING PRICES FOR ${tokensWithMetadata.length} ASSETS...`);
+      const priceAddresses = tokensWithMetadata
         .map((t) => t.address.toLowerCase())
         .filter((addr) => addr.startsWith("0x") && addr.length === 42);
       let prices: Record<string, number> = {};
@@ -1108,11 +1165,11 @@ function EngineCore() {
         if (t.address) verifiedAddresses.add(t.address.toLowerCase());
       });
 
-      addLog(`CALCULATING VALUES FOR ${tokensWithBalance.length} ASSETS...`);
+      addLog(`CALCULATING VALUES FOR ${tokensWithMetadata.length} ASSETS...`);
       const results: TokenInfo[] = [];
-      for (let i = 0; i < tokensWithBalance.length; i++) {
-        const t = tokensWithBalance[i];
-        const balance = balancesForTokens[i];
+      for (let i = 0; i < tokensWithMetadata.length; i++) {
+        const t = tokensWithMetadata[i];
+        const balance = balancesWithMetadata[i];
         const formatted = formatUnits(balance, t.decimals);
         const addrLower = t.address?.toLowerCase();
 
