@@ -46,7 +46,6 @@ import {
 } from "lucide-react";
 import {
   formatUnits,
-  createPublicClient,
   parseUnits,
   encodeFunctionData,
   getContract,
@@ -239,22 +238,6 @@ interface TokenInfo {
   valueUsd: number;
   isVerified: boolean;
   selected: boolean;
-}
-
-function resolveErc20Metadata(
-  decimalsResult: { status?: string; result?: unknown } | undefined,
-  symbolResult: { status?: string; result?: unknown } | undefined,
-): { decimals: number; symbol: string } | undefined {
-  const decimals = Number(decimalsResult?.result);
-  if (decimalsResult?.status !== "success" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
-    return undefined;
-  }
-  return {
-    decimals,
-    symbol: symbolResult?.status === "success" && typeof symbolResult.result === "string" && symbolResult.result
-      ? symbolResult.result
-      : "???",
-  };
 }
 
 type ProductSection = "clean" | "bridge" | "lend" | "achievements" | "ambassador";
@@ -662,11 +645,6 @@ function EngineCore() {
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
 
-  // fallback RPC client for Base when wallet is not connected
-  const baseRpcClient = createPublicClient({
-    chain: base,
-    transport: http("https://mainnet.base.org"),
-  });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [tokens, setTokens] = useState<TokenInfo[]>([]);
@@ -890,109 +868,48 @@ function EngineCore() {
       // ✅ FAST MODE: skip 1inch validation
       const validTokens = finalScanList;
 
-      // 2. Multicall balances with retry logic
-      const chunkSize = 100;
-      const allBalances: bigint[] = [];
-      for (let i = 0; i < validTokens.length; i += chunkSize) {
-        const chunk = validTokens.slice(i, i + chunkSize);
-        addLog(
-          `SCANNING CHUNK ${Math.floor(i / chunkSize) + 1}/${Math.ceil(finalScanList.length / chunkSize)}...`,
-        );
-
-        let success = false;
-        let retries = 0;
-        while (!success && retries < 2) {
-          try {
-            const client = publicClient || baseRpcClient;
-
-            const results = await (client as any).multicall({
-              contracts: chunk.map((t) => ({
-                address: t.address,
-                abi: ERC20_ABI,
-                functionName: "balanceOf",
-                args: [addressToScan as Address],
-              })),
-            });
-            results.forEach((res: any) => {
-              allBalances.push(
-                res.status === "success"
-                  ? (res.result as unknown as bigint)
-                  : 0n,
-              );
-            });
-            success = true;
-          } catch (chunkErr) {
-            retries++;
-            if (retries === 2) {
-              addLog(`CHUNK ${Math.floor(i / chunkSize) + 1} FAILED.`);
-              chunk.forEach(() => allBalances.push(0n));
-            } else {
-              await new Promise((r) => setTimeout(r, 500));
-            }
-          }
-        }
-        await new Promise((r) => setTimeout(r, 50));
+      // 2. Authoritative balance and ERC-20 metadata verification is server-side
+      // so the browser never uses a public Base RPC or receives RPC credentials.
+      let verificationData: any;
+      try {
+        const verificationRes = await axios.post("/api/scan/verify", {
+          address: addressToScan,
+          tokens: validTokens.map((token) => token.address),
+        }, { timeout: 60000 });
+        verificationData = verificationRes.data;
+      } catch (error: any) {
+        const message = error.response?.data?.error || "ON-CHAIN VERIFICATION UNAVAILABLE";
+        throw new Error(message);
+      }
+      if (verificationData.status === "verification_unavailable") {
+        throw new Error(verificationData.error || "ON-CHAIN VERIFICATION UNAVAILABLE");
+      }
+      if (verificationData.status === "partial_success") {
+        addLog(`ON-CHAIN VERIFICATION PARTIAL: ${verificationData.failedChunks || 0} READS UNAVAILABLE`);
       }
 
-      // 3. Filter tokens with balance
       console.time("⏱️ BALANCE FETCH");
-      const tokensWithBalance: typeof validTokens = [];
+      const candidatesByVerifiedAddress = new Map(validTokens.map((token) => [token.address.toLowerCase(), token]));
+      const tokensWithMetadata: typeof validTokens = [];
       const balancesForTokens: bigint[] = [];
-
-      validTokens.forEach((t, i) => {
-        if (allBalances[i] && allBalances[i] > 0n) {
-          tokensWithBalance.push(t);
-          balancesForTokens.push(allBalances[i]);
-        }
-      });
-
-      addLog(`BALANCES DETECTED: ${tokensWithBalance.length} ASSETS`);
-
-      // Provider discovery supplies addresses only. Resolve ERC-20 metadata from
-      // Base RPC before formatting values; balances above remain authoritative.
-      const metadataByAddress = new Map<string, { decimals: number; symbol: string }>();
-      const metadataChunkSize = 50;
-      let metadataFailures = 0;
-      for (let i = 0; i < tokensWithBalance.length; i += metadataChunkSize) {
-        const chunk = tokensWithBalance.slice(i, i + metadataChunkSize);
+      for (const verifiedToken of verificationData.tokens || []) {
+        const candidate = candidatesByVerifiedAddress.get(String(verifiedToken.address).toLowerCase());
+        if (!candidate || typeof verifiedToken.rawBalance !== "string") continue;
         try {
-          const client = publicClient || baseRpcClient;
-          const results = await (client as any).multicall({
-            allowFailure: true,
-            contracts: chunk.flatMap((token) => [
-              { address: token.address, abi: ERC20_ABI, functionName: "decimals" },
-              { address: token.address, abi: ERC20_ABI, functionName: "symbol" },
-            ]),
-          });
-          chunk.forEach((token, index) => {
-            const decimalsResult = results[index * 2];
-            const symbolResult = results[index * 2 + 1];
-            const metadata = resolveErc20Metadata(decimalsResult, symbolResult);
-            if (!metadata) {
-              metadataFailures += 1;
-              return;
-            }
-            metadataByAddress.set(token.address.toLowerCase(), metadata);
-          });
-        } catch (metadataError) {
-          console.warn("Token metadata multicall failed", metadataError);
-          metadataFailures += chunk.length;
+          const rawBalance = BigInt(verifiedToken.rawBalance);
+          if (rawBalance <= 0n || !Number.isInteger(verifiedToken.decimals)) continue;
+          tokensWithMetadata.push({ ...candidate, address: verifiedToken.address as Address, decimals: verifiedToken.decimals, symbol: verifiedToken.symbol || "???" });
+          balancesForTokens.push(rawBalance);
+        } catch {
+          // The server response is authoritative; malformed values are never treated as balances.
         }
       }
 
-      const tokensWithMetadata: typeof validTokens = [];
-      const balancesWithMetadata: bigint[] = [];
-      tokensWithBalance.forEach((token, index) => {
-        const metadata = metadataByAddress.get(token.address.toLowerCase());
-        if (!metadata) return;
-        tokensWithMetadata.push({ ...token, ...metadata });
-        balancesWithMetadata.push(balancesForTokens[index]);
-      });
-      if (metadataFailures > 0) addLog(`METADATA UNAVAILABLE FOR ${metadataFailures} ASSETS`);
+      addLog(`BALANCES DETECTED: ${tokensWithMetadata.length} ASSETS`);
       addLog(`METADATA RESOLVED: ${tokensWithMetadata.length} ASSETS`);
 
       const normalizedBalances = tokensWithMetadata.map((token, i) => {
-        const raw = balancesWithMetadata[i];
+        const raw = balancesForTokens[i];
         const decimals = token.decimals;
 
         const balance = Number(raw) / Math.pow(10, decimals);
@@ -1013,7 +930,7 @@ function EngineCore() {
       );
       console.log(
         "🧪 BALANCES:",
-        balancesWithMetadata.map((b) => b.toString()),
+        balancesForTokens.map((b) => b.toString()),
       );
 
       if (tokensWithMetadata.length === 0) {
@@ -1169,7 +1086,7 @@ function EngineCore() {
       const results: TokenInfo[] = [];
       for (let i = 0; i < tokensWithMetadata.length; i++) {
         const t = tokensWithMetadata[i];
-        const balance = balancesWithMetadata[i];
+        const balance = balancesForTokens[i];
         const formatted = formatUnits(balance, t.decimals);
         const addrLower = t.address?.toLowerCase();
 

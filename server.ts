@@ -16,6 +16,8 @@ import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 import { XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
+import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
+import type { VerificationClient } from "./server/tokenVerification";
 
 dotenv.config();
 
@@ -845,6 +847,29 @@ async function startServer() {
     } catch (error: any) {
       console.error("Critical backend scan failure:", error.message);
       res.status(500).json({ error: "Internal server error during scan" });
+    }
+  });
+
+  app.post("/api/scan/verify", async (req, res) => {
+    let verificationRequest;
+    try {
+      verificationRequest = parseTokenVerificationRequest(req.body);
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid verification request" });
+    }
+
+    const rpcUrl = configuredBaseRpcUrl(process.env.BASE_RPC_URL, process.env.ALCHEMY_API_KEY);
+    if (!rpcUrl) return res.status(503).json({ status: "verification_unavailable", error: "Base RPC verification is not configured" });
+
+    try {
+      const verification = await verifyTokenCandidates(
+        verificationRequest,
+        createPublicClient({ chain: base, transport: http(rpcUrl, { timeout: 10_000, retryCount: 1, retryDelay: 500 }) }) as unknown as VerificationClient,
+      );
+      return res.status(verification.status === "verification_unavailable" ? 503 : 200).json(verification);
+    } catch (error) {
+      console.error("Base RPC verification failed:", error);
+      return res.status(503).json({ status: "verification_unavailable", error: "Base RPC verification failed" });
     }
   });
 

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { formatUnits } from "viem";
 import {
   discoverAlchemyTokens,
@@ -136,12 +135,6 @@ async function run() {
   // manufacture a fallback balance. A symbol read failure remains displayable.
   assert.equal(formatUnits(188854n, 6), "0.188854");
   assert.equal(formatUnits(1500000000000000000n, 18), "1.5");
-  const scannerSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(scannerSource, /functionName: "decimals"/);
-  assert.match(scannerSource, /functionName: "symbol"/);
-  assert.match(scannerSource, /if \(!metadata\) \{\s+metadataFailures \+= 1;\s+return;/);
-  assert.match(scannerSource, /symbol: .*\?\s*symbolResult\.result\s*:\s*"\?\?\?"/s);
-
   // H. A genuine all-success empty result is distinct from unavailable discovery.
   const empty = await discoverBaseTokenCandidates(wallet, {
     request: async () => ({ data: { items: [] } }),
