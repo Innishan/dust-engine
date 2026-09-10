@@ -54,7 +54,20 @@ export type TokenVerificationResponse = {
   status: "success" | "partial_success" | "verification_unavailable";
   tokens: VerifiedToken[];
   failedChunks: number;
+  diagnostics: VerificationDiagnostics;
   error?: string;
+};
+
+type SafeErrorCategory = "rate_limited" | "timeout" | "transport_failure" | "rpc_multicall_failure";
+
+export type VerificationDiagnostics = {
+  balanceTransportFailures: number;
+  balanceCallFailures: number;
+  metadataTransportFailures: number;
+  decimalsFailures: number;
+  symbolFailures: number;
+  verifiedPositiveBalances: number;
+  errorCategories: Record<SafeErrorCategory, number>;
 };
 
 type VerificationLogger = Pick<Console, "warn">;
@@ -107,17 +120,17 @@ function validDecimals(result: MulticallResult | undefined): number | undefined 
     : undefined;
 }
 
-function errorDetails(error: unknown): { type: string; message: string } {
+function errorDetails(error: unknown): { type: string; category: SafeErrorCategory } {
   const type = error instanceof Error ? error.name : typeof error;
   const rawMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  const message = /429|rate.?limit|too many requests/.test(rawMessage)
+  const category = /429|rate.?limit|too many requests/.test(rawMessage)
     ? "rate_limited"
     : /timeout|timed out|abort/.test(rawMessage)
       ? "timeout"
       : /network|transport|fetch|socket|econn/.test(rawMessage)
         ? "transport_failure"
         : "rpc_multicall_failure";
-  return { type, message };
+  return { type, category };
 }
 
 async function multicallWithRetry(
@@ -126,14 +139,16 @@ async function multicallWithRetry(
   stage: "balance" | "metadata",
   chunkIndex: number,
   options: Required<Pick<VerificationOptions, "maxRpcAttempts" | "retryDelayMs" | "sleep" | "logger">>,
+  onTransportFailure: (stage: "balance" | "metadata", category: SafeErrorCategory) => void,
 ): Promise<MulticallResult[] | undefined> {
   for (let attempt = 1; attempt <= options.maxRpcAttempts; attempt += 1) {
     try {
       return await client.multicall({ allowFailure: true, contracts });
     } catch (error) {
-      const { type, message } = errorDetails(error);
+      const { type, category } = errorDetails(error);
+      onTransportFailure(stage, category);
       options.logger.warn(
-        `[Token verification] stage=${stage} chunk=${chunkIndex} attempt=${attempt}/${options.maxRpcAttempts} errorType=${type} message=${message}`,
+        `[Token verification] stage=${stage} chunk=${chunkIndex} attempt=${attempt}/${options.maxRpcAttempts} errorType=${type} category=${category}`,
       );
       if (attempt < options.maxRpcAttempts) await options.sleep(options.retryDelayMs * attempt);
     }
@@ -148,11 +163,30 @@ export async function verifyTokenCandidates(
 ): Promise<TokenVerificationResponse> {
   const balances = new Map<string, { address: Address; rawBalance: bigint }>();
   let failedChunks = 0;
+  const diagnostics: VerificationDiagnostics = {
+    balanceTransportFailures: 0,
+    balanceCallFailures: 0,
+    metadataTransportFailures: 0,
+    decimalsFailures: 0,
+    symbolFailures: 0,
+    verifiedPositiveBalances: 0,
+    errorCategories: {
+      rate_limited: 0,
+      timeout: 0,
+      transport_failure: 0,
+      rpc_multicall_failure: 0,
+    },
+  };
   const retryOptions = {
     maxRpcAttempts: options.maxRpcAttempts ?? MAX_RPC_ATTEMPTS,
     retryDelayMs: options.retryDelayMs ?? RETRY_DELAY_MS,
     sleep: options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
     logger: options.logger ?? console,
+  };
+  const onTransportFailure = (stage: "balance" | "metadata", category: SafeErrorCategory) => {
+    if (stage === "balance") diagnostics.balanceTransportFailures += 1;
+    else diagnostics.metadataTransportFailures += 1;
+    diagnostics.errorCategories[category] += 1;
   };
 
   for (const [chunkIndex, chunk] of chunks(request.tokens, BALANCE_CHUNK_SIZE).entries()) {
@@ -162,27 +196,36 @@ export async function verifyTokenCandidates(
       "balance",
       chunkIndex + 1,
       retryOptions,
+      onTransportFailure,
     );
     if (!results) {
       failedChunks += 1;
       continue;
     }
       let chunkFailed = false;
+      let callFailuresInChunk = 0;
       chunk.forEach((address, index) => {
         const result = results[index];
         if (result?.status !== "success") {
           chunkFailed = true;
+          callFailuresInChunk += 1;
+          diagnostics.balanceCallFailures += 1;
           return;
         }
         if (typeof result.result !== "bigint") {
           chunkFailed = true;
+          callFailuresInChunk += 1;
+          diagnostics.balanceCallFailures += 1;
           return;
         }
-        if (result.result > 0n) balances.set(address.toLowerCase(), { address, rawBalance: result.result });
+        if (result.result > 0n) {
+          balances.set(address.toLowerCase(), { address, rawBalance: result.result });
+          diagnostics.verifiedPositiveBalances += 1;
+        }
       });
       if (chunkFailed) {
         failedChunks += 1;
-        retryOptions.logger.warn(`[Token verification] stage=balance chunk=${chunkIndex + 1} individualCallFailures=true`);
+        retryOptions.logger.warn(`[Token verification] stage=balance chunk=${chunkIndex + 1} balanceCallFailures=${callFailuresInChunk}`);
       }
   }
 
@@ -197,38 +240,49 @@ export async function verifyTokenCandidates(
       "metadata",
       chunkIndex + 1,
       retryOptions,
+      onTransportFailure,
     );
     if (!results) {
       failedChunks += 1;
       continue;
     }
       let chunkFailed = false;
+      let decimalsFailuresInChunk = 0;
+      let symbolFailuresInChunk = 0;
       chunk.forEach(({ address, rawBalance }, index) => {
         const decimals = validDecimals(results[index * 2]);
         if (decimals === undefined) {
           chunkFailed = true;
+          decimalsFailuresInChunk += 1;
+          diagnostics.decimalsFailures += 1;
           return;
         }
         const symbolResult = results[index * 2 + 1];
+        const hasSymbol = symbolResult?.status === "success" && typeof symbolResult.result === "string" && symbolResult.result;
+        if (!hasSymbol) {
+          symbolFailuresInChunk += 1;
+          diagnostics.symbolFailures += 1;
+        }
         verified.push({
           address,
           rawBalance: rawBalance.toString(),
           decimals,
-          symbol: symbolResult?.status === "success" && typeof symbolResult.result === "string" && symbolResult.result
+          symbol: hasSymbol
             ? symbolResult.result
             : "???",
         });
       });
       if (chunkFailed) {
         failedChunks += 1;
-        retryOptions.logger.warn(`[Token verification] stage=metadata chunk=${chunkIndex + 1} individualCallFailures=true`);
+        retryOptions.logger.warn(`[Token verification] stage=metadata chunk=${chunkIndex + 1} decimalsFailures=${decimalsFailuresInChunk}`);
       }
+      if (symbolFailuresInChunk > 0) retryOptions.logger.warn(`[Token verification] stage=metadata chunk=${chunkIndex + 1} symbolFailures=${symbolFailuresInChunk}`);
   }
 
   if (request.tokens.length > 0 && balances.size === 0 && failedChunks > 0) {
-    return { status: "verification_unavailable", tokens: [], failedChunks, error: "Base RPC verification failed" };
+    return { status: "verification_unavailable", tokens: [], failedChunks, diagnostics, error: "Base RPC verification failed" };
   }
-  return { status: failedChunks > 0 ? "partial_success" : "success", tokens: verified, failedChunks };
+  return { status: failedChunks > 0 ? "partial_success" : "success", tokens: verified, failedChunks, diagnostics };
 }
 
 export function configuredBaseRpcUrl(baseRpcUrl?: string, alchemyApiKey?: string): string | undefined {
