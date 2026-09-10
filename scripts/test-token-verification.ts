@@ -59,6 +59,48 @@ async function run() {
   const missingSymbol = await verifyTokenCandidates(request, clientFor({ failSymbolFor: sixDecimals }));
   assert.equal(missingSymbol.tokens.find((token) => token.address.toLowerCase() === sixDecimals.toLowerCase())?.symbol, "???");
 
+  let transientCalls = 0;
+  const diagnosticMessages: string[] = [];
+  const transient = await verifyTokenCandidates(request, {
+    async multicall(multicallRequest) {
+      transientCalls += 1;
+      if (transientCalls === 1) throw new Error("429 https://rpc.example/v2/secret-key?apiKey=leaked");
+      return clientFor().multicall(multicallRequest);
+    },
+  }, {
+    maxRpcAttempts: 3,
+    retryDelayMs: 0,
+    sleep: async () => undefined,
+    logger: { warn: (message: string) => diagnosticMessages.push(message) },
+  });
+  assert.equal(transient.tokens.length, 2);
+  assert.equal(transientCalls, 3);
+  assert.equal(diagnosticMessages.length, 1);
+  assert.match(diagnosticMessages[0]!, /stage=balance chunk=1 attempt=1\/3 errorType=Error/);
+  assert.doesNotMatch(diagnosticMessages[0]!, /secret-key|leaked|rpc\.example/);
+
+  let metadataTransientCalls = 0;
+  const metadataTransient = await verifyTokenCandidates(request, {
+    async multicall(multicallRequest: any) {
+      if (multicallRequest.contracts[0]?.functionName === "decimals") {
+        metadataTransientCalls += 1;
+        if (metadataTransientCalls === 1) throw new Error("temporary metadata transport failure");
+      }
+      return clientFor().multicall(multicallRequest);
+    },
+  }, { maxRpcAttempts: 3, retryDelayMs: 0, sleep: async () => undefined, logger: { warn: () => undefined } });
+  assert.equal(metadataTransient.tokens.length, 2);
+  assert.equal(metadataTransientCalls, 2);
+
+  let permanentCalls = 0;
+  const permanent = await verifyTokenCandidates(
+    parseTokenVerificationRequest({ address: wallet, tokens: [sixDecimals] }),
+    { async multicall() { permanentCalls += 1; throw new Error("transport unavailable"); } },
+    { maxRpcAttempts: 3, retryDelayMs: 0, sleep: async () => undefined, logger: { warn: () => undefined } },
+  );
+  assert.equal(permanent.status, "verification_unavailable");
+  assert.equal(permanentCalls, 3);
+
   const partial = await verifyTokenCandidates(
     parseTokenVerificationRequest({
       address: wallet,
@@ -69,6 +111,7 @@ async function run() {
       ],
     }),
     clientFor({ failBalanceFor: eighteenDecimals }),
+    { maxRpcAttempts: 1, logger: { warn: () => undefined } },
   );
   assert.equal(partial.status, "partial_success");
   assert.equal(partial.tokens.length, 1);

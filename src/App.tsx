@@ -23,7 +23,7 @@ import {
   useModal,
 } from "connectkit";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Settings,
@@ -65,6 +65,7 @@ import { BridgePanel } from "./bridge/BridgePanel";
 import AchievementsPanel from "./achievements/AchievementsPanel";
 import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
+import { createScanRunGuard, withConsoleTimer } from "./scanLifecycle";
 
 sdk.actions.ready();
 
@@ -644,6 +645,7 @@ function EngineCore() {
   const { address, isConnected } = useAccount();
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
+  const scanRunGuardRef = useRef(createScanRunGuard());
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -677,6 +679,12 @@ function EngineCore() {
   };
 
   const analyze = async (targetAddress?: string) => {
+    if (!scanRunGuardRef.current.tryAcquire()) {
+      addLog("SCAN ALREADY IN PROGRESS");
+      return;
+    }
+
+    try {
     const addressToScan = targetAddress || address;
 
     const liquidityMap: Record<string, number> = {};
@@ -861,7 +869,7 @@ function EngineCore() {
         });
 
       addLog(`INDEXER PROVIDED TOKENS`);
-      console.time("⏱️ TOTAL SCAN");
+      await withConsoleTimer("⏱️ TOTAL SCAN", async () => {
 
       addLog(`VERIFYING ${finalScanList.length} ASSETS ON-CHAIN...`);
 
@@ -1024,8 +1032,6 @@ function EngineCore() {
       }
 
       console.timeEnd("⏱️ PRICE FETCH");
-      console.timeEnd("⏱️ TOTAL SCAN");
-
       // 3.3 DexScreener (Fallback)
       const missingAddresses = priceAddresses.filter((addr) => !prices[addr]);
 
@@ -1124,6 +1130,7 @@ function EngineCore() {
 
       setTokens(results);
       addLog(`SCAN COMPLETE: FOUND ${results.length} ASSETS`);
+      });
     } catch (err: any) {
       console.error("Analysis failed", err);
       const errorMsg =
@@ -1131,6 +1138,9 @@ function EngineCore() {
       addLog(`ERROR: ${errorMsg.toUpperCase()}`);
     } finally {
       setIsAnalyzing(false);
+    }
+    } finally {
+      scanRunGuardRef.current.release();
     }
   };
 
