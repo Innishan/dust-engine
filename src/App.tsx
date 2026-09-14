@@ -46,6 +46,9 @@ import {
 } from "lucide-react";
 import {
   formatUnits,
+  createPublicClient,
+  getAddress,
+  isAddress,
   parseUnits,
   encodeFunctionData,
   getContract,
@@ -66,6 +69,7 @@ import AchievementsPanel from "./achievements/AchievementsPanel";
 import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
 import { createScanRunGuard, withConsoleTimer } from "./scanLifecycle";
+import { recordSuccessfulBalances, verifiedPositiveBalances } from "./scanBalanceVerification";
 
 sdk.actions.ready();
 
@@ -83,7 +87,7 @@ const WETH = "0x4200000000000000000000000000000000000006" as Address;
 const COMMON_BASE_TOKENS = [
   {
     symbol: "USDC",
-    address: "0x833589fCD6eDb6E08f4C7C32D4f71b54bDA02913" as Address,
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address,
     decimals: 6,
   },
   {
@@ -239,6 +243,34 @@ interface TokenInfo {
   valueUsd: number;
   isVerified: boolean;
   selected: boolean;
+}
+
+function resolveErc20Metadata(
+  decimalsResult: { status?: string; result?: unknown } | undefined,
+  symbolResult: { status?: string; result?: unknown } | undefined,
+): { decimals: number; symbol: string } | undefined {
+  const decimals = Number(decimalsResult?.result);
+  if (decimalsResult?.status !== "success" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    return undefined;
+  }
+  return {
+    decimals,
+    symbol: symbolResult?.status === "success" && typeof symbolResult.result === "string" && symbolResult.result
+      ? symbolResult.result
+      : "???",
+  };
+}
+
+function metadataErrorCategory(error: unknown): string {
+  const details = error as { name?: unknown; message?: unknown; shortMessage?: unknown };
+  const message = [details?.name, details?.shortMessage, details?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  if (/429|rate.limit/.test(message)) return "rate_limited";
+  if (/timeout|timed out|abort/.test(message)) return "timeout";
+  if (/http|fetch|network|transport/.test(message)) return "transport_failure";
+  return "multicall_failure";
 }
 
 type ProductSection = "clean" | "bridge" | "lend" | "achievements" | "ambassador";
@@ -647,6 +679,11 @@ function EngineCore() {
   const publicClient = usePublicClient();
   const scanRunGuardRef = useRef(createScanRunGuard());
 
+  const baseRpcClient = createPublicClient({
+    chain: base,
+    transport: http("https://mainnet.base.org"),
+  });
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [tokens, setTokens] = useState<TokenInfo[]>([]);
@@ -876,48 +913,126 @@ function EngineCore() {
       // ✅ FAST MODE: skip 1inch validation
       const validTokens = finalScanList;
 
-      // 2. Authoritative balance and ERC-20 metadata verification is server-side
-      // so the browser never uses a public Base RPC or receives RPC credentials.
-      let verificationData: any;
-      try {
-        const verificationRes = await axios.post("/api/scan/verify", {
-          address: addressToScan,
-          tokens: validTokens.map((token) => token.address),
-        }, { timeout: 60000 });
-        verificationData = verificationRes.data;
-      } catch (error: any) {
-        const message = error.response?.data?.error || "ON-CHAIN VERIFICATION UNAVAILABLE";
-        throw new Error(message);
-      }
-      if (verificationData.status === "verification_unavailable") {
-        throw new Error(verificationData.error || "ON-CHAIN VERIFICATION UNAVAILABLE");
-      }
-      if (verificationData.status === "partial_success") {
-        addLog(`ON-CHAIN VERIFICATION PARTIAL: ${verificationData.failedChunks || 0} READS UNAVAILABLE`);
+      // 2. Browser-side Base RPC balance verification.
+      const chunkSize = 100;
+      const balancesByAddress = new Map<string, bigint>();
+      for (let i = 0; i < validTokens.length; i += chunkSize) {
+        const chunk = validTokens.slice(i, i + chunkSize);
+        addLog(
+          `SCANNING CHUNK ${Math.floor(i / chunkSize) + 1}/${Math.ceil(finalScanList.length / chunkSize)}...`,
+        );
+
+        let success = false;
+        let retries = 0;
+        while (!success && retries < 2) {
+          try {
+            const client = publicClient || baseRpcClient;
+            const results = await (client as any).multicall({
+              contracts: chunk.map((token) => ({
+                address: token.address,
+                abi: ERC20_ABI,
+                functionName: "balanceOf",
+                args: [addressToScan as Address],
+              })),
+            });
+            recordSuccessfulBalances(balancesByAddress, chunk, results);
+            success = true;
+          } catch {
+            retries += 1;
+            if (retries === 2) {
+              addLog(`CHUNK ${Math.floor(i / chunkSize) + 1} FAILED.`);
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
       console.time("⏱️ BALANCE FETCH");
-      const candidatesByVerifiedAddress = new Map(validTokens.map((token) => [token.address.toLowerCase(), token]));
-      const tokensWithMetadata: typeof validTokens = [];
+      const tokensWithBalance: typeof validTokens = [];
       const balancesForTokens: bigint[] = [];
-      for (const verifiedToken of verificationData.tokens || []) {
-        const candidate = candidatesByVerifiedAddress.get(String(verifiedToken.address).toLowerCase());
-        if (!candidate || typeof verifiedToken.rawBalance !== "string") continue;
-        try {
-          const rawBalance = BigInt(verifiedToken.rawBalance);
-          if (rawBalance <= 0n || !Number.isInteger(verifiedToken.decimals)) continue;
-          tokensWithMetadata.push({ ...candidate, address: verifiedToken.address as Address, decimals: verifiedToken.decimals, symbol: verifiedToken.symbol || "???" });
-          balancesForTokens.push(rawBalance);
-        } catch {
-          // The server response is authoritative; malformed values are never treated as balances.
+      verifiedPositiveBalances(validTokens, balancesByAddress).forEach(({ token, balance }) => {
+        tokensWithBalance.push(token);
+        balancesForTokens.push(balance);
+      });
+
+      addLog(`BALANCES DETECTED: ${tokensWithBalance.length} ASSETS`);
+
+      const metadataByAddress = new Map<string, { decimals: number; symbol: string }>();
+      const metadataChunkSize = 50;
+      let metadataFailures = 0;
+      for (let i = 0; i < tokensWithBalance.length; i += metadataChunkSize) {
+        const chunk = tokensWithBalance.slice(i, i + metadataChunkSize);
+        const metadataChunkIndex = Math.floor(i / metadataChunkSize) + 1;
+        const metadataTokens = chunk.flatMap((token) => {
+          if (isAddress(token.address)) return [{ token, address: getAddress(token.address) }];
+          metadataFailures += 1;
+          console.warn("Token metadata address skipped", {
+            metadataChunkIndex,
+            chunkSize: chunk.length,
+            attempt: 0,
+            category: "invalid_address",
+          });
+          return [];
+        });
+
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            const client = publicClient || baseRpcClient;
+            const results = await (client as any).multicall({
+              allowFailure: true,
+              contracts: metadataTokens.flatMap(({ address: tokenAddress }) => [
+                { address: tokenAddress, abi: ERC20_ABI, functionName: "decimals" },
+                { address: tokenAddress, abi: ERC20_ABI, functionName: "symbol" },
+              ]),
+            });
+            const successfulMetadataResults = results.filter((result: any) => result.status === "success").length;
+            console.info("Token metadata multicall result", {
+              metadataChunkIndex,
+              chunkSize: metadataTokens.length,
+              attempt,
+              successfulMetadataResults,
+              failedMetadataResults: results.length - successfulMetadataResults,
+            });
+            metadataTokens.forEach(({ token }, index) => {
+              const metadata = resolveErc20Metadata(results[index * 2], results[index * 2 + 1]);
+              if (!metadata) {
+                metadataFailures += 1;
+                return;
+              }
+              metadataByAddress.set(token.address.toLowerCase(), metadata);
+            });
+            break;
+          } catch (metadataError) {
+            console.warn("Token metadata multicall failed", {
+              metadataChunkIndex,
+              chunkSize: metadataTokens.length,
+              attempt,
+              category: metadataErrorCategory(metadataError),
+            });
+            if (attempt === 2) {
+              metadataFailures += metadataTokens.length;
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 300));
+            }
+          }
         }
       }
 
-      addLog(`BALANCES DETECTED: ${tokensWithMetadata.length} ASSETS`);
+      const tokensWithMetadata: typeof validTokens = [];
+      const balancesWithMetadata: bigint[] = [];
+      tokensWithBalance.forEach((token, index) => {
+        const metadata = metadataByAddress.get(token.address.toLowerCase());
+        if (!metadata) return;
+        tokensWithMetadata.push({ ...token, ...metadata });
+        balancesWithMetadata.push(balancesForTokens[index]);
+      });
+      if (metadataFailures > 0) addLog(`METADATA UNAVAILABLE FOR ${metadataFailures} ASSETS`);
       addLog(`METADATA RESOLVED: ${tokensWithMetadata.length} ASSETS`);
 
       const normalizedBalances = tokensWithMetadata.map((token, i) => {
-        const raw = balancesForTokens[i];
+        const raw = balancesWithMetadata[i];
         const decimals = token.decimals;
 
         const balance = Number(raw) / Math.pow(10, decimals);
@@ -938,7 +1053,7 @@ function EngineCore() {
       );
       console.log(
         "🧪 BALANCES:",
-        balancesForTokens.map((b) => b.toString()),
+        balancesWithMetadata.map((b) => b.toString()),
       );
 
       if (tokensWithMetadata.length === 0) {
@@ -1092,7 +1207,7 @@ function EngineCore() {
       const results: TokenInfo[] = [];
       for (let i = 0; i < tokensWithMetadata.length; i++) {
         const t = tokensWithMetadata[i];
-        const balance = balancesForTokens[i];
+        const balance = balancesWithMetadata[i];
         const formatted = formatUnits(balance, t.decimals);
         const addrLower = t.address?.toLowerCase();
 
