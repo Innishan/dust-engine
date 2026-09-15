@@ -18,6 +18,7 @@ import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
 import type { VerificationClient } from "./server/tokenVerification";
+import { mountBaseRpcProxy } from "./server/baseRpcProxy";
 
 dotenv.config();
 
@@ -74,6 +75,12 @@ async function startServer() {
     return { allowed: true, retryAfterSeconds: 0 };
   };
   
+  // Same-origin scanner-only JSON-RPC transport. This intentionally precedes
+  // the permissive application CORS middleware.
+  mountBaseRpcProxy(app, {
+    getRpcUrl: () => configuredBaseRpcUrl(process.env.BASE_RPC_URL, process.env.ALCHEMY_API_KEY),
+  });
+
   app.use(cors());
   app.use(express.json());
 

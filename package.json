@@ -15,6 +15,7 @@
     "token-discovery:test": "tsx scripts/test-token-discovery.ts",
     "token-verification:test": "tsx scripts/test-token-verification.ts",
     "scan-balance-verification:test": "tsx scripts/test-scan-balance-verification.ts",
+    "base-rpc-proxy:test": "tsx scripts/test-base-rpc-proxy.ts",
     "scan-lifecycle:test": "tsx scripts/test-scan-lifecycle.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",

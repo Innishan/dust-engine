@@ -679,9 +679,9 @@ function EngineCore() {
   const publicClient = usePublicClient();
   const scanRunGuardRef = useRef(createScanRunGuard());
 
-  const baseRpcClient = createPublicClient({
+  const scannerRpcClient = createPublicClient({
     chain: base,
-    transport: http("https://mainnet.base.org"),
+    transport: http("/api/base-rpc"),
   });
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -926,8 +926,7 @@ function EngineCore() {
         let retries = 0;
         while (!success && retries < 2) {
           try {
-            const client = publicClient || baseRpcClient;
-            const results = await (client as any).multicall({
+            const results = await (scannerRpcClient as any).multicall({
               contracts: chunk.map((token) => ({
                 address: token.address,
                 abi: ERC20_ABI,
@@ -979,8 +978,7 @@ function EngineCore() {
 
         for (let attempt = 1; attempt <= 2; attempt += 1) {
           try {
-            const client = publicClient || baseRpcClient;
-            const results = await (client as any).multicall({
+            const results = await (scannerRpcClient as any).multicall({
               allowFailure: true,
               contracts: metadataTokens.flatMap(({ address: tokenAddress }) => [
                 { address: tokenAddress, abi: ERC20_ABI, functionName: "decimals" },
