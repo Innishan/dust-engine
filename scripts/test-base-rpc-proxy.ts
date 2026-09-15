@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import express from "express";
-import { BaseRpcRateLimiter, BASE_RPC_PROXY_PATH, mountBaseRpcProxy } from "../server/baseRpcProxy";
+import { BaseRpcRateLimiter, BASE_RPC_MAX_BODY_BYTES, BASE_RPC_PROXY_PATH, mountBaseRpcProxy } from "../server/baseRpcProxy";
 
 async function startProxy(limit = 240) {
   const app = express();
@@ -65,7 +65,7 @@ try {
   response = await request(proxy.url, "GET");
   assert.equal(response.status, 404, "non-POST requests must be rejected");
 
-  response = await request(proxy.url, "POST", { ...chainIdRequest, params: ["x".repeat(33 * 1024)] });
+  response = await request(proxy.url, "POST", { ...chainIdRequest, params: ["x".repeat(BASE_RPC_MAX_BODY_BYTES + 1024)] });
   assert.equal(response.status, 413, "oversized JSON-RPC bodies must be rejected");
 
   response = await request(proxy.url, "POST", { ...ethCallRequest, params: [{ data: "0xdead" }, "latest"] });

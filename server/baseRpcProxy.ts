@@ -3,7 +3,7 @@ import express, { type Express, type Request, type Response } from "express";
 
 export const BASE_RPC_PROXY_PATH = "/api/base-rpc";
 export const BASE_RPC_ALLOWED_METHODS = new Set(["eth_call", "eth_chainId"]);
-export const BASE_RPC_MAX_BODY_BYTES = 32 * 1024;
+export const BASE_RPC_MAX_BODY_BYTES = 64 * 1024;
 export const BASE_RPC_RATE_LIMIT = 240;
 export const BASE_RPC_RATE_WINDOW_MS = 60_000;
 export const BASE_RPC_RATE_LIMIT_MAX_ENTRIES = 10_000;
