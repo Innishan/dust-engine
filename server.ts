@@ -438,7 +438,7 @@ async function startServer() {
 
   type ActivityEvent = { ambassadorId: string; kind: string; quantity: number; bridgeVolumeUsd: number; xQualityScore: number; xImpressions: number; reviewStatus: string; completedAt: string };
   const getLeaderboardEntries = () => {
-    const ambassadors = statsDb.prepare(`SELECT id, display_name AS creator, x_handle AS xHandle, x_username AS xUsername, created_at AS createdAt FROM ambassadors WHERE status = 'approved'`).all() as any[];
+    const ambassadors = statsDb.prepare(`SELECT id, display_name AS creator, wallet_address AS walletAddress, x_user_id AS xUserId, x_username AS xUsername, created_at AS createdAt FROM ambassadors WHERE status = 'approved'`).all() as any[];
     const events = statsDb.prepare(`SELECT ambassador_id AS ambassadorId, kind, quantity, bridge_volume_usd AS bridgeVolumeUsd, x_quality_score AS xQualityScore, x_impressions AS xImpressions, review_status AS reviewStatus, completed_at AS completedAt FROM ambassador_activity_events WHERE review_status = 'approved'`).all() as ActivityEvent[];
     const byAmbassador = new Map<string, ActivityEvent[]>();
     for (const event of events) byAmbassador.set(event.ambassadorId, [...(byAmbassador.get(event.ambassadorId) || []), event]);
@@ -465,7 +465,21 @@ async function startServer() {
       // Clean Dust is verified as a token count only. Never estimate its USD value
       // from client analytics; verified USD volume currently consists of Bridge only.
       const volumeUsd = bridgeVolumeUsd;
-      return { ambassadorId: ambassador.id, creator: ambassador.creator, xHandle: ambassador.xUsername || ambassador.xHandle, points: Math.round(points), referrals, coinsSwept, bridgeVolumeUsd, volumeUsd, xContentPosts, firstVerifiedActivityAt };
+      return {
+        ambassadorId: ambassador.id,
+        creator: ambassador.creator,
+        walletAddress: ambassador.walletAddress,
+        // `x_user_id` is written only by the completed X OAuth callback. Do not
+        // expose a legacy/manual handle as a verified leaderboard identity.
+        ...(ambassador.xUserId && ambassador.xUsername ? { xUsername: ambassador.xUsername } : {}),
+        points: Math.round(points),
+        referrals,
+        coinsSwept,
+        bridgeVolumeUsd,
+        volumeUsd,
+        xContentPosts,
+        firstVerifiedActivityAt,
+      };
     });
     // Stable ties: points, then bridge volume, then earliest verified activity.
     return entries.sort((a, b) => b.points - a.points || b.bridgeVolumeUsd - a.bridgeVolumeUsd || a.firstVerifiedActivityAt.localeCompare(b.firstVerifiedActivityAt) || a.ambassadorId.localeCompare(b.ambassadorId))

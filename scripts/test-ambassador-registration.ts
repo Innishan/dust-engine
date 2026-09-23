@@ -36,6 +36,7 @@ async function startServer(databasePath: string) {
     cwd: path.resolve("."),
     env: {
       ...process.env,
+      NODE_ENV: "test",
       PORT: String(port),
       DUST_ENGINE_DATABASE_PATH: databasePath,
       X_CLIENT_ID: "test-client",
@@ -93,6 +94,12 @@ async function callback(baseUrl: string, state: string, cookie?: string) {
     headers: cookie ? { cookie } : undefined,
     redirect: "manual",
   });
+}
+
+async function leaderboard(baseUrl: string) {
+  const response = await fetch(`${baseUrl}/api/ambassadors/leaderboard`);
+  assert.equal(response.status, 200);
+  return await response.json() as { entries: Array<{ ambassadorId: string; walletAddress: string; xUsername?: string }> };
 }
 
 function assertStateUnused(databasePath: string, state: string) {
@@ -155,6 +162,19 @@ try {
   const arbitraryNonce = await requestNonce(running.baseUrl, otherWallet.address);
   const arbitrarySignature = await wallet.signMessage({ message: arbitraryNonce.body.message! });
   assert.equal((await activate(running.baseUrl, arbitraryNonce.body.nonce!, arbitrarySignature, otherWallet.address)).status, 401, "an arbitrary wallet cannot be authenticated");
+
+  const unlinkedEntry = (await leaderboard(running.baseUrl)).entries.find((entry) => entry.ambassadorId === firstProfile.profile.id);
+  assert.equal(unlinkedEntry?.walletAddress, wallet.address.toLowerCase(), "unlinked ambassadors expose their server-recorded wallet fallback");
+  assert.equal(unlinkedEntry?.xUsername, undefined, "an unverified X handle is never exposed as a verified identity");
+
+  await stopServer(running.child);
+  running = null;
+  const verifiedDatabase = new Database(databasePath);
+  verifiedDatabase.prepare("UPDATE ambassadors SET x_user_id = ?, x_username = ?, x_handle = ? WHERE id = ?").run("verified-x-user", "thecryptobankr", "legacy-handle", firstProfile.profile.id);
+  verifiedDatabase.close();
+  running = await startServer(databasePath);
+  const verifiedEntry = (await leaderboard(running.baseUrl)).entries.find((entry) => entry.ambassadorId === firstProfile.profile.id);
+  assert.equal(verifiedEntry?.xUsername, "thecryptobankr", "the leaderboard exposes the username linked to a verified X user ID");
 
   await stopServer(running.child);
   running = null;
