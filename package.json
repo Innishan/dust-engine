@@ -13,6 +13,7 @@
     "ambassador:x-content:test": "tsx scripts/test-ambassador-x-content.ts",
     "achievements:test": "tsx scripts/test-achievements.ts",
     "token-discovery:test": "tsx scripts/test-token-discovery.ts",
+    "token-pricing:test": "tsx scripts/test-token-pricing.ts",
     "token-verification:test": "tsx scripts/test-token-verification.ts",
     "scan-balance-verification:test": "tsx scripts/test-scan-balance-verification.ts",
     "base-rpc-proxy:test": "tsx scripts/test-base-rpc-proxy.ts",

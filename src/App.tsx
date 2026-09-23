@@ -70,6 +70,13 @@ import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
 import { createScanRunGuard, withConsoleTimer } from "./scanLifecycle";
 import { recordSuccessfulBalances, verifiedPositiveBalances } from "./scanBalanceVerification";
+import {
+  createInitialQuotes,
+  fetchDexScreenerQuotes,
+  unresolvedEligibleAddresses,
+  type BlockscoutQuote,
+  type PriceQuote,
+} from "./tokenPricing";
 
 sdk.actions.ready();
 
@@ -83,6 +90,12 @@ const ONE_INCH_ROUTER = "0x111111125421ca6dc452d289314280a0f8842a65" as Address;
 const PROTOCOL_FEE_RECIPIENT =
   "0xEe36C3c644240302eB8121F66D4e23C068512a40" as Address; // Fee collector
 const WETH = "0x4200000000000000000000000000000000000006" as Address;
+const LOCAL_KNOWN_PRICES: Record<string, number> = {
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 1,
+  "0xfde4c96c8593536e31f229ea8f37b2ad3d69d441": 1,
+  "0x50c5725949a6f0c72e6c45641830677285586337": 1,
+  "0x4200000000000000000000000000000000000006": 2500,
+};
 
 const COMMON_BASE_TOKENS = [
   {
@@ -273,7 +286,7 @@ function metadataErrorCategory(error: unknown): string {
   return "multicall_failure";
 }
 
-type ProductSection = "clean" | "bridge" | "lend" | "achievements" | "ambassador";
+type ProductSection = "clean" | "bridge" | "liquidity" | "lend" | "achievements" | "ambassador";
 
 export default function App() {
   const pathname = window.location.pathname;
@@ -370,6 +383,13 @@ function DustEngineApp() {
                     description="Lending and borrowing tools are in development. This section will become available when the experience is ready."
                   />
                 )}
+                {activeSection === "liquidity" && (
+                  <ComingSoonPanel
+                    icon={<Coins size={24} strokeWidth={1.75} />}
+                    title="Liquidity"
+                    description="Liquidity tools are in development. This section will become available when the experience is ready."
+                  />
+                )}
                 {activeSection === "bridge" && <BridgePanel />}
                 {activeSection === "achievements" && <AchievementsSection />}
                 {activeSection === "ambassador" && <AmbassadorPanel />}
@@ -464,6 +484,12 @@ function ProductNavigation({
     { id: "clean", label: "Clean Dust", icon: <Coins size={16} /> },
     { id: "bridge", label: "Bridge", icon: <ArrowRight size={16} /> },
     {
+      id: "liquidity",
+      label: "Liquidity",
+      icon: <Coins size={16} />,
+      comingSoon: true,
+    },
+    {
       id: "lend",
       label: "Lend & Borrow",
       icon: <Wrench size={16} />,
@@ -539,6 +565,7 @@ function MobileProductNavigation({
   const sections: { id: ProductSection; label: string; badge?: string }[] = [
     { id: "clean", label: "Clean Dust" },
     { id: "bridge", label: "Bridge" },
+    { id: "liquidity", label: "Liquidity", badge: "Soon" },
     { id: "lend", label: "Lend & Borrow", badge: "Soon" },
     { id: "achievements", label: "Achievements" },
     { id: "ambassador", label: "Ambassador Program", badge: "Season 1" },
@@ -759,6 +786,7 @@ function EngineCore() {
       // --- Phase 1: Multi-Source Discovery ---
       addLog("INITIATING AGGRESSIVE SCAN...");
       let discoveredTokens: any[] = [];
+      let blockscoutQuotes: Record<string, BlockscoutQuote> | undefined;
 
       // 1.1 Backend Deep Scan
       try {
@@ -779,6 +807,7 @@ function EngineCore() {
         }
 
         if (backendRes.data?.status === "success" || backendRes.data?.status === "partial_success") {
+          blockscoutQuotes = backendRes.data.blockscoutQuotes;
           discoveredTokens = [
             ...discoveredTokens,
             // Discovery providers supply addresses only. The existing Base RPC
@@ -1063,143 +1092,16 @@ function EngineCore() {
       // --- Phase 3: Price Fetching & Verification ---
       console.time("⏱️ PRICE FETCH");
       addLog(`FETCHING PRICES FOR ${tokensWithMetadata.length} ASSETS...`);
-      const priceAddresses = tokensWithMetadata
-        .map((t) => t.address.toLowerCase())
-        .filter((addr) => addr.startsWith("0x") && addr.length === 42);
-      let prices: Record<string, number> = {};
-
-      // 3.1 Use prices from indexer first
-      finalScanList.forEach((t) => {
-        if (t.address && t.priceUsd > 0)
-          prices[t.address.toLowerCase()] = t.priceUsd;
-      });
-
-      // DEBUG HERE
-      console.log("🧪 PRICE TOKENS COUNT:", priceAddresses.length);
-      console.log("🧪 SAMPLE ADDRESSES:", priceAddresses.slice(0, 5));
-
-      // 3.2 CoinGecko (Robust + Fallback)
-      try {
-        const chunkSize = 20;
-
-        for (let i = 0; i < priceAddresses.length; i += chunkSize) {
-          const chunk = priceAddresses.slice(i, i + chunkSize);
-
-          console.log("📦 CG CHUNK:", chunk.length);
-
-          try {
-            // 🔥 Try batch first
-            const cgRes = await axios.get(
-              `https://api.coingecko.com/api/v3/simple/token_price/base`,
-              {
-                params: {
-                  contract_addresses: chunk.join(","),
-                  vs_currencies: "usd",
-                },
-                timeout: 8000,
-              },
-            );
-
-            Object.entries(cgRes.data).forEach(([addr, val]: [string, any]) => {
-              if (val?.usd) {
-                prices[addr.toLowerCase()] = val.usd;
-              }
-            });
-
-            console.log("✅ CG BATCH SUCCESS");
-          } catch (batchErr) {
-            console.warn("⚠️ CG BATCH FAILED → fallback to single");
-
-            // 🔥 FALLBACK: fetch one-by-one
-            for (const addr of chunk) {
-              try {
-                const singleRes = await axios.get(
-                  `https://api.coingecko.com/api/v3/simple/token_price/base`,
-                  {
-                    params: {
-                      contract_addresses: addr,
-                      vs_currencies: "usd",
-                    },
-                    timeout: 5000,
-                  },
-                );
-
-                const val = singleRes.data[addr];
-                if (val?.usd) {
-                  prices[addr.toLowerCase()] = val.usd;
-                  console.log("💰 CG SINGLE OK:", addr);
-                }
-              } catch {
-                console.log("❌ CG NO DATA:", addr);
-              }
-            }
-          }
-
-          // rate limit protection
-          if (priceAddresses.length > chunkSize) {
-            await new Promise((r) => setTimeout(r, 300));
-          }
-        }
-      } catch (e) {
-        console.warn("CoinGecko failed completely", e);
-      }
-
-      console.timeEnd("⏱️ PRICE FETCH");
-      // 3.3 DexScreener (Fallback)
-      const missingAddresses = priceAddresses.filter((addr) => !prices[addr]);
-
-      if (missingAddresses.length > 0) {
-        const priceCache: Record<string, number> = {};
-
-        try {
-          const chunks = [];
-          for (let i = 0; i < missingAddresses.length; i += 80) {
-            chunks.push(missingAddresses.slice(i, i + 80));
-          }
-
-          const responses = await Promise.all(
-            chunks.map((chunk) =>
-              axios
-                .get(
-                  `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(",")}`,
-                  { timeout: 8000 },
-                )
-                .catch(() => null),
-            ),
-          );
-
-          responses.forEach((res) => {
-            if (!res?.data?.pairs) return;
-
-            res.data.pairs.forEach((pair: any) => {
-              const addr = pair.baseToken.address.toLowerCase();
-              if (pair.priceUsd) {
-                priceCache[addr] = parseFloat(pair.priceUsd);
-              }
-            });
-          });
-
-          // merge into your existing prices object
-          Object.assign(prices, priceCache);
-        } catch (e) {
-          console.warn("DexScreener failed", e);
-        }
-      }
-
-      const fallbackPrices: Record<string, number> = {
-        "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 1.0, // USDC
-        "0xfde4c96c8593536e31f229ea8f37b2ad3d69d441": 1.0, // USDT
-        "0x50c5725949a6f0c72e6c45641830677285586337": 1.0, // DAI
-        "0x4200000000000000000000000000000000000006": 2500, // WETH
-      };
-
-      // Create a set of verified addresses from 1inch list
-      const verifiedAddresses = new Set(
-        oneInchTokens.map((t) => t.address?.toLowerCase()).filter(Boolean),
+      const quotes: Record<string, PriceQuote> = createInitialQuotes(LOCAL_KNOWN_PRICES, blockscoutQuotes);
+      const unresolved = unresolvedEligibleAddresses(tokensWithMetadata, quotes, WETH, blockscoutQuotes);
+      const dexScreenerQuotes = await fetchDexScreenerQuotes(
+        unresolved,
+        (url) => axios.get(url, { timeout: 8000 }),
       );
-      COMMON_BASE_TOKENS.forEach((t) => {
-        if (t.address) verifiedAddresses.add(t.address.toLowerCase());
-      });
+      for (const [address, quote] of Object.entries(dexScreenerQuotes)) {
+        if (!quotes[address]) quotes[address] = quote;
+      }
+      console.timeEnd("⏱️ PRICE FETCH");
 
       addLog(`CALCULATING VALUES FOR ${tokensWithMetadata.length} ASSETS...`);
       const results: TokenInfo[] = [];
@@ -1214,7 +1116,8 @@ function EngineCore() {
         // ❌ Ignore WETH from dust detection
         if (addrLower === WETH.toLowerCase()) continue;
 
-        const price = prices[addrLower] || fallbackPrices[addrLower] || 0;
+        const quote = quotes[addrLower];
+        const price = quote?.priceUsd || 0;
         const valueUsd = (parseFloat(formatted) || 0) * price;
 
         if (balance > 0n) {
@@ -1224,11 +1127,11 @@ function EngineCore() {
             formattedBalance: formatted,
             priceUsd: price,
             valueUsd,
-            isVerified: verifiedAddresses.has(addrLower) || !!prices[addrLower],
+            isVerified: quote?.verified === true,
             selected:
               valueUsd > 0 &&
               valueUsd < dustThreshold &&
-              (verifiedAddresses.has(addrLower) || !!prices[addrLower]),
+              quote?.verified === true,
           });
         }
       }

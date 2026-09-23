@@ -14,12 +14,20 @@ export type ProviderResult = {
   candidates: DiscoveryCandidate[];
   pages: number;
   diagnostic?: string;
+  blockscoutQuotes?: Record<string, BlockscoutQuote>;
+};
+
+export type BlockscoutQuote = {
+  priceUsd: number;
+  reputation?: string;
+  volume24h?: number;
 };
 
 export type DiscoveryResponse = {
   status: "success" | "partial_success" | "discovery_unavailable";
   tokens: DiscoveryCandidate[];
   discovery: { sources: ProviderResult[] };
+  blockscoutQuotes?: Record<string, BlockscoutQuote>;
 };
 
 export function discoveryHttpStatus(response: Pick<DiscoveryResponse, "status">): 200 | 503 {
@@ -68,6 +76,23 @@ export function isValidTokenAddress(value: unknown): value is string {
   return typeof value === "string"
     && /^0x[0-9a-fA-F]{40}$/.test(value)
     && !NATIVE_SENTINELS.has(value.toLowerCase());
+}
+
+export function blockscoutQuotesFromBalanceItems(items: unknown[]): Record<string, BlockscoutQuote> {
+  const quotes: Record<string, BlockscoutQuote> = {};
+  for (const item of items as Array<{ token?: { type?: unknown; address_hash?: unknown; exchange_rate?: unknown; reputation?: unknown; volume_24h?: unknown } }>) {
+    const token = item?.token;
+    const priceUsd = Number(token?.exchange_rate);
+    if (token?.type !== "ERC-20" || !isValidTokenAddress(token?.address_hash) || !Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+    const reputation = typeof token.reputation === "string" ? token.reputation : undefined;
+    const volume24h = Number(token.volume_24h);
+    quotes[token.address_hash.toLowerCase()] = {
+      priceUsd,
+      ...(reputation === undefined ? {} : { reputation }),
+      ...(Number.isFinite(volume24h) ? { volume24h } : {}),
+    };
+  }
+  return quotes;
 }
 
 function candidatesFromAddresses(addresses: unknown[], source: DiscoverySource): DiscoveryCandidate[] {
@@ -198,7 +223,13 @@ export async function discoverBlockscoutBalances(address: string, config: TokenD
     const body = response.data as unknown;
     const items = Array.isArray(body) ? body : (body as { items?: unknown[] })?.items;
     if (!Array.isArray(items)) return malformed(source, 0, "missing items array");
-    return { source, status: "success", candidates: candidatesFromAddresses(items.filter((item: any) => item?.token?.type === "ERC-20").map((item: any) => item.token.address_hash), source), pages: 1 };
+    return {
+      source,
+      status: "success",
+      candidates: candidatesFromAddresses(items.filter((item: any) => item?.token?.type === "ERC-20").map((item: any) => item.token.address_hash), source),
+      pages: 1,
+      blockscoutQuotes: blockscoutQuotesFromBalanceItems(items),
+    };
   } catch (error) {
     return { source, status: errorStatus(error), candidates: [], pages: 0, diagnostic: diagnostic(error) };
   }
@@ -255,5 +286,6 @@ export async function discoverBaseTokenCandidates(address: string, config: Token
   const status: DiscoveryResponse["status"] = successful.length === enabled.length && enabled.length > 0
     ? "success"
     : usable.length > 0 ? "partial_success" : "discovery_unavailable";
-  return { status, tokens: mergeDiscoveryCandidates(results), discovery: { sources: results } };
+  const blockscoutQuotes = results.find((result) => result.source === "blockscout-balances")?.blockscoutQuotes;
+  return { status, tokens: mergeDiscoveryCandidates(results), discovery: { sources: results }, ...(blockscoutQuotes ? { blockscoutQuotes } : {}) };
 }
