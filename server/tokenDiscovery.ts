@@ -18,7 +18,7 @@ export type ProviderResult = {
 };
 
 export type BlockscoutQuote = {
-  priceUsd: number;
+  priceUsd?: number;
   reputation?: string;
   volume24h?: number;
 };
@@ -83,11 +83,11 @@ export function blockscoutQuotesFromBalanceItems(items: unknown[]): Record<strin
   for (const item of items as Array<{ token?: { type?: unknown; address_hash?: unknown; exchange_rate?: unknown; reputation?: unknown; volume_24h?: unknown } }>) {
     const token = item?.token;
     const priceUsd = Number(token?.exchange_rate);
-    if (token?.type !== "ERC-20" || !isValidTokenAddress(token?.address_hash) || !Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+    if (token?.type !== "ERC-20" || !isValidTokenAddress(token?.address_hash)) continue;
     const reputation = typeof token.reputation === "string" ? token.reputation : undefined;
     const volume24h = Number(token.volume_24h);
     quotes[token.address_hash.toLowerCase()] = {
-      priceUsd,
+      ...(Number.isFinite(priceUsd) && priceUsd > 0 ? { priceUsd } : {}),
       ...(reputation === undefined ? {} : { reputation }),
       ...(Number.isFinite(volume24h) ? { volume24h } : {}),
     };

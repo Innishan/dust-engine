@@ -73,10 +73,11 @@ import { recordSuccessfulBalances, verifiedPositiveBalances } from "./scanBalanc
 import {
   createInitialQuotes,
   fetchDexScreenerQuotes,
-  unresolvedEligibleAddresses,
+  marketEvidenceAddresses,
   type BlockscoutQuote,
   type PriceQuote,
 } from "./tokenPricing";
+import { evaluateCleanDustEligibility } from "./tokenEligibility";
 
 sdk.actions.ready();
 
@@ -255,6 +256,7 @@ interface TokenInfo {
   priceUsd: number;
   valueUsd: number;
   isVerified: boolean;
+  isEligible: boolean;
   selected: boolean;
 }
 
@@ -1093,14 +1095,11 @@ function EngineCore() {
       console.time("⏱️ PRICE FETCH");
       addLog(`FETCHING PRICES FOR ${tokensWithMetadata.length} ASSETS...`);
       const quotes: Record<string, PriceQuote> = createInitialQuotes(LOCAL_KNOWN_PRICES, blockscoutQuotes);
-      const unresolved = unresolvedEligibleAddresses(tokensWithMetadata, quotes, WETH, blockscoutQuotes);
+      const marketEvidence = marketEvidenceAddresses(tokensWithMetadata, blockscoutQuotes, WETH);
       const dexScreenerQuotes = await fetchDexScreenerQuotes(
-        unresolved,
+        marketEvidence,
         (url) => axios.get(url, { timeout: 8000 }),
       );
-      for (const [address, quote] of Object.entries(dexScreenerQuotes)) {
-        if (!quotes[address]) quotes[address] = quote;
-      }
       console.timeEnd("⏱️ PRICE FETCH");
 
       addLog(`CALCULATING VALUES FOR ${tokensWithMetadata.length} ASSETS...`);
@@ -1117,6 +1116,12 @@ function EngineCore() {
         if (addrLower === WETH.toLowerCase()) continue;
 
         const quote = quotes[addrLower];
+        const eligibility = evaluateCleanDustEligibility({
+          address: t.address,
+          canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
+          blockscoutQuote: blockscoutQuotes?.[addrLower],
+          dexScreenerQuote: dexScreenerQuotes[addrLower],
+        });
         const price = quote?.priceUsd || 0;
         const valueUsd = (parseFloat(formatted) || 0) * price;
 
@@ -1128,10 +1133,12 @@ function EngineCore() {
             priceUsd: price,
             valueUsd,
             isVerified: quote?.verified === true,
+            isEligible: eligibility.eligible,
             selected:
               valueUsd > 0 &&
               valueUsd < dustThreshold &&
-              quote?.verified === true,
+              quote?.verified === true &&
+              eligibility.eligible,
           });
         }
       }
@@ -1186,6 +1193,10 @@ function EngineCore() {
       const formatted = formatUnits(balance as bigint, decimals as number);
       const valueUsd = parseFloat(formatted) * price;
 
+      const eligibility = evaluateCleanDustEligibility({
+        address: customAddress,
+        canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
+      });
       const newToken: TokenInfo = {
         symbol: symbol as string,
         address: customAddress as Address,
@@ -1195,7 +1206,12 @@ function EngineCore() {
         priceUsd: price,
         valueUsd,
         isVerified: !!price,
-        selected: true,
+        // A manually entered address has no Blockscout evidence in this flow.
+        // Only a canonical contract can be selected here; other tokens must be
+        // discovered by the scanner and meet the same evidence rules as every
+        // other Clean Dust candidate.
+        isEligible: eligibility.eligible,
+        selected: eligibility.eligible && !!price,
       };
 
       setTokens((prev) => {
@@ -1217,7 +1233,7 @@ function EngineCore() {
   const toggleSelect = (addr: Address) => {
     setTokens((prev) =>
       prev.map((t) =>
-        t.address === addr ? { ...t, selected: !t.selected } : t,
+        t.address === addr && t.isEligible ? { ...t, selected: !t.selected } : t,
       ),
     );
   };
@@ -1230,7 +1246,7 @@ function EngineCore() {
         const isFiltered = filteredTokens.some(
           (ft) => ft.address === t.address,
         );
-        if (isFiltered) return { ...t, selected: !allSelected };
+        if (isFiltered && t.isEligible) return { ...t, selected: !allSelected };
         return t;
       }),
     );
@@ -1239,7 +1255,7 @@ function EngineCore() {
   const filteredTokens = useMemo(() => {
     if (showAll) return tokens;
     return tokens.filter(
-      (t) => t.valueUsd >= 0.01 && t.valueUsd <= dustThreshold && t.isVerified,
+      (t) => t.valueUsd >= 0.01 && t.valueUsd <= dustThreshold && t.isVerified && t.isEligible,
     );
   }, [tokens, showAll, dustThreshold]);
 
@@ -1650,9 +1666,10 @@ function TokenRow({
 }) {
   return (
     <div
-      onClick={onToggle}
+      onClick={token.isEligible ? onToggle : undefined}
       className={cn(
-        "group flex items-center gap-4 p-4 rounded-xl border transition-all cursor-pointer",
+        "group flex items-center gap-4 p-4 rounded-xl border transition-all",
+        token.isEligible ? "cursor-pointer" : "cursor-not-allowed opacity-60",
         token.selected
           ? "bg-emerald-500/5 border-emerald-500/30"
           : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700",
@@ -1674,9 +1691,9 @@ function TokenRow({
           <span className="font-bold text-zinc-100 truncate">
             {token.symbol}
           </span>
-          {token.isVerified && (
+          {token.isEligible && (
             <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded uppercase font-bold tracking-tighter shrink-0">
-              Verified
+              Eligible
             </span>
           )}
         </div>
@@ -1787,7 +1804,7 @@ function SwapButton({
         const balance =
           typeof t.balance === "bigint" ? t.balance : BigInt(t.balance || 0);
 
-        return t.valueUsd >= 0.01 && balance > 0n;
+        return t.isEligible && t.isVerified && t.valueUsd >= 0.01 && balance > 0n;
       });
 
       console.log("✅ VALID TOKENS:", validTokens);
@@ -1798,8 +1815,8 @@ function SwapButton({
       const successfulTokenAddresses: string[] = [];
       let verifiedCleanTxHash: string | undefined;
 
-      if (selectedTokens.length === 0) {
-        console.log("❌ NO TOKENS SELECTED");
+      if (validTokens.length === 0) {
+        console.log("❌ NO ELIGIBLE TOKENS SELECTED");
         setLoading(false);
         return;
       }

@@ -6,6 +6,7 @@ import {
   createInitialQuotes,
   dexScreenerChunks,
   fetchDexScreenerQuotes,
+  marketEvidenceAddresses,
   qualifyingDexScreenerQuotes,
   unresolvedEligibleAddresses,
 } from "../src/tokenPricing";
@@ -17,7 +18,8 @@ const quoteOnly = "0x2222222222222222222222222222222222222222";
 const weth = "0x4200000000000000000000000000000000000006";
 
 async function run() {
-  // A. Quotes are extracted only from valid, positively priced ERC-20 balance rows.
+  // A. Blockscout metadata is retained for every valid ERC-20 balance row, while
+  // only a positive exchange rate becomes a usable price.
   const extracted = blockscoutQuotesFromBalanceItems([
     { token: { type: "ERC-20", address_hash: aero, exchange_rate: "0.538953", reputation: "ok", volume_24h: "1234.5" } },
     { token: { type: "ERC-20", address_hash: other, reputation: "ok" } },
@@ -26,7 +28,9 @@ async function run() {
     { token: { type: "ERC-721", address_hash: weth, exchange_rate: 1 } },
   ]);
   assert.deepEqual(extracted[aero.toLowerCase()], { priceUsd: 0.538953, reputation: "ok", volume24h: 1234.5 });
-  assert.equal(Object.keys(extracted).length, 1);
+  assert.deepEqual(extracted[other], { reputation: "ok" });
+  assert.deepEqual(extracted[quoteOnly], {});
+  assert.equal(Object.keys(extracted).length, 4);
 
   // B. Source precedence is strict and unresolved tokens fail closed.
   const quotes = createInitialQuotes({ [usdc]: 1 }, {
@@ -39,8 +43,21 @@ async function run() {
     { address: other, source: "alchemy,blockscout-balances" },
     { address: quoteOnly, source: "alchemy" },
     { address: weth, source: "blockscout-balances" },
-  ], quotes, weth);
+  ], quotes, weth, { [other]: { reputation: "ok" } });
   assert.deepEqual(eligible, [other]);
+  assert.deepEqual(
+    marketEvidenceAddresses([
+      { address: aero, source: "blockscout-balances" },
+      { address: other, source: "blockscout-balances" },
+      { address: quoteOnly, source: "alchemy" },
+    ], {
+      [aero.toLowerCase()]: { priceUsd: 0.538953, reputation: "ok", volume24h: 1_234.5 },
+      [other]: { priceUsd: 1, reputation: "ok", volume24h: 999 },
+      [quoteOnly]: { priceUsd: 1, reputation: "ok", volume24h: 1_000_000 },
+    }, weth),
+    [aero.toLowerCase()],
+    "DexScreener corroboration is requested only for a Blockscout-backed market candidate",
+  );
   const untrusted = createInitialQuotes({}, { [quoteOnly]: { priceUsd: 1, reputation: "scam" } });
   assert.equal(untrusted[quoteOnly], undefined, "non-ok Blockscout reputation cannot create a verified quote");
   assert.deepEqual(
@@ -86,14 +103,21 @@ async function run() {
   });
   assert.equal(failedUrls.length, 3, "a failed batch never cascades into individual requests");
 
-  // D/E. The automatic path has no CoinGecko client at all: 1,239 balances
-  // yield only bounded DexScreener requests, while Blockscout-priced rows skip it.
+  // D/E. The automatic path has no CoinGecko client at all: 1,239 strong
+  // Blockscout candidates yield only bounded DexScreener requests for optional
+  // corroboration; the response never establishes eligibility by itself.
   const balances = Array.from({ length: 1239 }, (_, index) => `0x${(index + 5000).toString(16).padStart(40, "0")}`);
-  const blockscoutPriced = createInitialQuotes({}, Object.fromEntries(balances.slice(0, 39).map((address) => [address, { priceUsd: 1 }])));
-  const unresolvedBalances = unresolvedEligibleAddresses(balances.map((address) => ({ address, source: "blockscout-balances" })), blockscoutPriced, weth);
-  assert.equal(unresolvedBalances.length, 1200);
-  assert.equal(dexScreenerChunks(unresolvedBalances).length, 40);
-  assert.ok(dexScreenerChunks(unresolvedBalances).every((chunk) => chunk.length <= 30));
+  const blockscoutEvidence = Object.fromEntries(balances.map((address) => [address, {
+    priceUsd: 1, reputation: "ok", volume24h: 10_000,
+  }]));
+  const corroborationCandidates = marketEvidenceAddresses(
+    balances.map((address) => ({ address, source: "blockscout-balances" })),
+    blockscoutEvidence,
+    weth,
+  );
+  assert.equal(corroborationCandidates.length, 1239);
+  assert.equal(dexScreenerChunks(corroborationCandidates).length, 42);
+  assert.ok(dexScreenerChunks(corroborationCandidates).every((chunk) => chunk.length <= 30));
 
   // Regression fixture: $0.22 USDC and $0.14 AERO remain verified dust below $3.
   const usdcValue = Number(220466n) / 10 ** 6 * quotes[usdc].priceUsd;

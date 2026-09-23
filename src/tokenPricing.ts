@@ -1,3 +1,5 @@
+import { MIN_BLOCKSCOUT_VOLUME_24H_USD } from "./tokenEligibility";
+
 export type PriceQuote = {
   priceUsd: number;
   source: "local" | "blockscout" | "dexscreener";
@@ -5,7 +7,7 @@ export type PriceQuote = {
 };
 
 export type BlockscoutQuote = {
-  priceUsd: number;
+  priceUsd?: number;
   reputation?: string;
   volume24h?: number;
 };
@@ -32,7 +34,7 @@ export function createInitialQuotes(
   }
   for (const [address, quote] of Object.entries(blockscoutQuotes || {})) {
     const key = normalizeTokenAddress(address);
-    if (key && !quotes[key] && validPrice(quote.priceUsd) && (quote.reputation === undefined || quote.reputation === "ok")) {
+    if (key && !quotes[key] && validPrice(quote.priceUsd) && quote.reputation === "ok") {
       quotes[key] = { priceUsd: quote.priceUsd, source: "blockscout", verified: true };
     }
   }
@@ -51,7 +53,25 @@ export function unresolvedEligibleAddresses(
     const sources = typeof token.source === "string" ? token.source.split(",") : [];
     const reputation = address ? blockscoutQuotes?.[address]?.reputation : undefined;
     return address && !quotes[address] && address !== weth && sources.includes("blockscout-balances")
-      && (reputation === undefined || reputation === "ok") ? [address] : [];
+      && reputation === "ok" ? [address] : [];
+  }))];
+}
+
+export function marketEvidenceAddresses(
+  tokens: Array<{ address?: unknown; source?: unknown }>,
+  blockscoutQuotes: Record<string, BlockscoutQuote> | undefined,
+  wethAddress: string,
+): string[] {
+  const weth = wethAddress.toLowerCase();
+  return [...new Set(tokens.flatMap((token) => {
+    const address = normalizeTokenAddress(token.address);
+    const sources = typeof token.source === "string" ? token.source.split(",") : [];
+    const quote = address ? blockscoutQuotes?.[address] : undefined;
+    return address && address !== weth && sources.includes("blockscout-balances")
+      && quote?.reputation === "ok" && validPrice(quote.priceUsd)
+      && typeof quote.volume24h === "number" && quote.volume24h >= MIN_BLOCKSCOUT_VOLUME_24H_USD
+      ? [address]
+      : [];
   }))];
 }
 
