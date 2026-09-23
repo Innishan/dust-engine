@@ -13,7 +13,7 @@ import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
-import { XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
@@ -748,10 +748,10 @@ async function startServer() {
   const xContentQualityThreshold = Number.isInteger(configuredQualityThreshold) && configuredQualityThreshold >= 0 && configuredQualityThreshold <= 100
     ? configuredQualityThreshold
     : 40;
-  const configuredRecoveryInterval = Number.parseInt(process.env.X_CONTENT_RECOVERY_INTERVAL_MS || "600000", 10);
-  const xContentRecoveryIntervalMs = Number.isInteger(configuredRecoveryInterval) && configuredRecoveryInterval >= 60_000
+  const configuredRecoveryInterval = Number.parseInt(process.env.X_CONTENT_RECOVERY_INTERVAL_MS || String(DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS), 10);
+  const xContentRecoveryIntervalMs = Number.isInteger(configuredRecoveryInterval) && configuredRecoveryInterval >= DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS
     ? configuredRecoveryInterval
-    : 600_000;
+    : DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS;
   const xBearerToken = process.env.X_BEARER_TOKEN;
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const xContentWorker = xBearerToken ? (() => {

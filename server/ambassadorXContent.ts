@@ -17,7 +17,7 @@ export type XPost = {
 export type XContentClient = {
   getPost(postId: string): Promise<XPost | null>;
   syncRules(): Promise<void>;
-  stream(signal: AbortSignal, onPostId: (postId: string) => Promise<void>): Promise<void>;
+  stream(signal: AbortSignal, onPost: (post: XPost) => Promise<void>): Promise<void>;
   recentSearch(startTime: string): Promise<XPost[]>;
 };
 
@@ -26,7 +26,11 @@ type Candidate = { post_id: string; author_id: string | null; status: CandidateS
 
 export type ProcessResult = { status: "approved" | "rejected" | "deferred" | "duplicate"; reason?: string; points?: number };
 
-export const X_DISCOVERY_RULE = '("Dust Engine" OR @DustEngine OR @dustengineapp OR "dustengine.xyz" OR #DustEngine OR dustengine) -is:retweet';
+export const X_DISCOVERY_RULE = '("Dust Engine" OR @DustEngine OR @dustengineapp OR "dustengine.xyz" OR "https://dustengine.xyz/" OR #DustEngine OR dustengine) -is:retweet';
+export const DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const X_CONTENT_RECOVERY_OVERLAP_MS = 60 * 60 * 1000;
+const MAX_RECENT_SEARCH_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const RETRY_TICK_MS = 60_000;
 const MAX_RETRIES = 5;
 const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 60 * 60 * 1000;
@@ -104,6 +108,15 @@ function shingleSimilarity(left: string, right: string) {
 
 export function hasDiscoverySignal(content: string) {
   return /\bdust\s*engine\b|@dustengine(?:app)?\b|dustengine\.xyz|#dustengine\b|\bdustengine\b/i.test(content);
+}
+
+export function recoverySearchStart(now: Date, previousRecoveryAt?: string): string {
+  const nowMs = now.getTime();
+  const checkpoint = previousRecoveryAt ? Date.parse(previousRecoveryAt) : Number.NaN;
+  const fallback = nowMs - DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS;
+  const earliest = nowMs - MAX_RECENT_SEARCH_AGE_MS;
+  const start = Math.max(earliest, (Number.isFinite(checkpoint) ? checkpoint : fallback) - X_CONTENT_RECOVERY_OVERLAP_MS);
+  return new Date(start).toISOString();
 }
 
 export function calculateXContentPoints(qualityScore: number, impressions: number) {
@@ -190,8 +203,12 @@ export class XContentProcessor {
   }
 
   async processRecoveredPost(post: XPost): Promise<ProcessResult> {
+    return this.processDiscoveredPost(post, "recent_search");
+  }
+
+  async processDiscoveredPost(post: XPost, source: string): Promise<ProcessResult> {
     if (!/^[0-9]{5,30}$/.test(post.id)) return { status: "rejected", reason: "invalid_post_id" };
-    const candidate = this.claim(post.id, "recent_search");
+    const candidate = this.claim(post.id, source);
     if (!candidate) return { status: "duplicate" };
     try {
       return await this.processClaimedPost(post, candidate);
@@ -272,17 +289,7 @@ export class XApiClient implements XContentClient {
 
   async getPost(postId: string): Promise<XPost | null> {
     const data = await this.request(`/tweets/${postId}?tweet.fields=author_id,created_at,public_metrics,referenced_tweets&expansions=referenced_tweets.id`);
-    const post = data?.data;
-    if (!post) return null;
-    const referenced = Array.isArray(post.referenced_tweets) ? post.referenced_tweets : [];
-    const referencedIds = new Set(referenced.map((entry: any) => entry.id));
-    const included = Array.isArray(data?.includes?.tweets) ? data.includes.tweets : [];
-    return {
-      id: String(post.id), authorId: String(post.author_id || ""), text: String(post.text || ""),
-      referencedText: included.filter((entry: any) => referencedIds.has(entry.id)).map((entry: any) => String(entry.text || "")).join("\n"),
-      isRepost: referenced.some((entry: any) => entry.type === "retweeted"), isQuote: referenced.some((entry: any) => entry.type === "quoted"),
-      impressions: Number(post.public_metrics?.impression_count || 0), createdAt: typeof post.created_at === "string" ? post.created_at : undefined,
-    };
+    return data?.data ? xPostFromApi(data.data, data.includes?.tweets) : null;
   }
 
   async syncRules() {
@@ -300,7 +307,7 @@ export class XApiClient implements XContentClient {
     return response.json();
   }
 
-  async stream(signal: AbortSignal, onPostId: (postId: string) => Promise<void>) {
+  async stream(signal: AbortSignal, onPost: (post: XPost) => Promise<void>) {
     const response = await this.fetchImpl("https://api.x.com/2/tweets/search/stream?tweet.fields=author_id,created_at,public_metrics,referenced_tweets&expansions=referenced_tweets.id", { headers: { Authorization: `Bearer ${this.bearerToken}` }, signal });
     if (!response.ok || !response.body) throw new Error(`X stream failed with ${response.status}`);
     const reader = response.body.getReader();
@@ -316,7 +323,7 @@ export class XApiClient implements XContentClient {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
-          if (typeof event?.data?.id === "string") await onPostId(event.data.id);
+          if (typeof event?.data?.id === "string") await onPost(xPostFromApi(event.data, event.includes?.tweets));
         } catch { /* malformed stream events are ignored; recovery covers gaps */ }
       }
     }
@@ -325,20 +332,35 @@ export class XApiClient implements XContentClient {
   async recentSearch(startTime: string): Promise<XPost[]> {
     const query = encodeURIComponent(X_DISCOVERY_RULE);
     const start = encodeURIComponent(startTime);
-    const data = await this.request(`/tweets/search/recent?query=${query}&start_time=${start}&max_results=100&tweet.fields=author_id,created_at,public_metrics,referenced_tweets&expansions=referenced_tweets.id`);
-    const included = Array.isArray(data?.includes?.tweets) ? data.includes.tweets : [];
-    return (data?.data || []).map((post: any) => {
-      const referenced = Array.isArray(post.referenced_tweets) ? post.referenced_tweets : [];
-      const referencedIds = new Set(referenced.map((entry: any) => entry.id));
-      return { id: String(post.id), authorId: String(post.author_id || ""), text: String(post.text || ""), referencedText: included.filter((entry: any) => referencedIds.has(entry.id)).map((entry: any) => String(entry.text || "")).join("\n"), isRepost: referenced.some((entry: any) => entry.type === "retweeted"), isQuote: referenced.some((entry: any) => entry.type === "quoted"), impressions: Number(post.public_metrics?.impression_count || 0), createdAt: typeof post.created_at === "string" ? post.created_at : undefined };
-    });
+    const posts: XPost[] = [];
+    let paginationToken: string | undefined;
+    do {
+      const page = paginationToken ? `&pagination_token=${encodeURIComponent(paginationToken)}` : "";
+      const data = await this.request(`/tweets/search/recent?query=${query}&start_time=${start}&max_results=100&tweet.fields=author_id,created_at,public_metrics,referenced_tweets&expansions=referenced_tweets.id${page}`);
+      posts.push(...(data?.data || []).map((post: any) => xPostFromApi(post, data?.includes?.tweets)));
+      paginationToken = typeof data?.meta?.next_token === "string" ? data.meta.next_token : undefined;
+    } while (paginationToken);
+    return posts;
   }
+}
+
+function xPostFromApi(post: any, includedTweets: unknown): XPost {
+  const referenced = Array.isArray(post?.referenced_tweets) ? post.referenced_tweets : [];
+  const referencedIds = new Set(referenced.map((entry: any) => entry.id));
+  const included = Array.isArray(includedTweets) ? includedTweets : [];
+  return {
+    id: String(post?.id || ""), authorId: String(post?.author_id || ""), text: String(post?.text || ""),
+    referencedText: included.filter((entry: any) => referencedIds.has(entry.id)).map((entry: any) => String(entry.text || "")).join("\n"),
+    isRepost: referenced.some((entry: any) => entry.type === "retweeted"), isQuote: referenced.some((entry: any) => entry.type === "quoted"),
+    impressions: Number(post?.public_metrics?.impression_count || 0), createdAt: typeof post?.created_at === "string" ? post.created_at : undefined,
+  };
 }
 
 export class XContentWorker {
   private controller: AbortController | null = null;
   private streamTask: Promise<void> | null = null;
-  private recoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private recoveryRunning = false;
 
@@ -347,9 +369,22 @@ export class XContentWorker {
 
   start() {
     this.stopped = false;
-    void this.recover();
-    this.recoveryTimer = setInterval(() => void this.recover(), this.options.recoveryIntervalMs);
+    void this.recoverOnce();
+    this.retryTimer = setInterval(() => void this.options.processor.retryDueCandidates(), RETRY_TICK_MS);
+    this.scheduleRecovery();
     this.streamTask = this.runStream();
+  }
+
+  private scheduleRecovery() {
+    const previous = this.options.db.prepare(`SELECT value FROM ambassador_x_content_runtime_state WHERE key = 'last_recovery_at'`).get() as { value?: string } | undefined;
+    const checkpoint = previous?.value ? Date.parse(previous.value) : Number.NaN;
+    const delay = Number.isFinite(checkpoint)
+      ? Math.max(0, checkpoint + this.options.recoveryIntervalMs - this.now().getTime())
+      : 0;
+    this.recoveryTimer = setTimeout(() => {
+      void this.recoverOnce();
+      this.recoveryTimer = setInterval(() => void this.recoverOnce(), this.options.recoveryIntervalMs);
+    }, delay);
   }
 
   private async runStream() {
@@ -358,7 +393,7 @@ export class XContentWorker {
       this.controller = new AbortController();
       try {
         await this.options.client.syncRules();
-        await this.options.client.stream(this.controller.signal, async (postId) => { await this.options.processor.processPostId(postId, "filtered_stream"); });
+        await this.options.client.stream(this.controller.signal, async (post) => { await this.options.processor.processDiscoveredPost(post, "filtered_stream"); });
         attempt = 0;
       } catch (error) {
         if (this.stopped || this.controller.signal.aborted) break;
@@ -369,16 +404,15 @@ export class XContentWorker {
     }
   }
 
-  private async recover() {
+  async recoverOnce() {
     if (this.recoveryRunning) return;
     this.recoveryRunning = true;
     try {
       await this.options.processor.retryDueCandidates();
       const previous = this.options.db.prepare(`SELECT value FROM ambassador_x_content_runtime_state WHERE key = 'last_recovery_at'`).get() as { value?: string } | undefined;
-      const overlapMs = 15 * 60 * 1000;
-      const earliest = this.now().getTime() - (7 * 24 * 60 * 60 * 1000) + overlapMs;
-      const start = Math.max(earliest, (previous?.value ? Date.parse(previous.value) : this.now().getTime() - overlapMs) - overlapMs);
-      const posts = await this.options.client.recentSearch(new Date(start).toISOString());
+      const previousTime = previous?.value ? Date.parse(previous.value) : Number.NaN;
+      if (Number.isFinite(previousTime) && this.now().getTime() - previousTime < this.options.recoveryIntervalMs) return;
+      const posts = await this.options.client.recentSearch(recoverySearchStart(this.now(), previous?.value));
       for (const post of posts) await this.options.processor.processRecoveredPost(post);
       const now = this.now().toISOString();
       this.options.db.prepare(`INSERT INTO ambassador_x_content_runtime_state (key, value, updated_at) VALUES ('last_recovery_at', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(now, now);
@@ -391,8 +425,10 @@ export class XContentWorker {
 
   async stop() {
     this.stopped = true;
-    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
     this.recoveryTimer = null;
+    if (this.retryTimer) clearInterval(this.retryTimer);
+    this.retryTimer = null;
     this.controller?.abort();
     await this.streamTask?.catch(() => undefined);
   }

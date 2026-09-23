@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { evaluateXContent, RetryableQualityError, type XContentEvaluation } from "../server/ambassadorXQuality";
-import { XContentProcessor, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, type XPost } from "../server/ambassadorXContent";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, X_CONTENT_RECOVERY_OVERLAP_MS, X_DISCOVERY_RULE, XContentProcessor, XContentWorker, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, recoverySearchStart, type XPost } from "../server/ambassadorXContent";
 
 const database = new Database(":memory:");
 database.exec(`
@@ -109,8 +109,39 @@ now = new Date(now.getTime() + 61_000);
 await processor.retryDueCandidates();
 assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10012'`).get().status, "approved", "recovery retry uses authoritative X data");
 
+// Discovery remains one global query regardless of the number of verified
+// Ambassadors; no user timeline or per-Ambassador request is available here.
+const insertAmbassador = database.prepare(`INSERT INTO ambassadors (id, x_user_id, status) VALUES (?, ?, 'approved')`);
+database.transaction(() => {
+  for (let index = 3; index <= 5_000; index += 1) insertAmbassador.run(`ambassador-${index}`, `user-${index}`);
+})();
+const globalSearchStarts: string[] = [];
+const globalClient = {
+  getPost: async () => null,
+  syncRules: async () => undefined,
+  stream: async () => undefined,
+  recentSearch: async (startTime: string) => {
+    globalSearchStarts.push(startTime);
+    return [post("10018", { text: "Dust Engine gave me a clear, practical way to clean the small tokens in my Base wallet.", impressions: 555 })];
+  },
+};
+const worker = new XContentWorker({ db: database, client: globalClient, processor, recoveryIntervalMs: DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, now: () => now });
+const firstRecoveryStart = new Date(now.getTime() - DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS - X_CONTENT_RECOVERY_OVERLAP_MS).toISOString();
+assert.equal(recoverySearchStart(now), firstRecoveryStart, "a first recovery covers the prior daily window plus overlap");
+await worker.recoverOnce();
+assert.deepEqual(globalSearchStarts, [firstRecoveryStart], "5,000 Ambassadors still use one global discovery request");
+assert.equal((await worker.recoverOnce()), undefined, "a persisted checkpoint suppresses an unnecessary restart search");
+assert.equal(globalSearchStarts.length, 1);
+assert.ok(awards.some((award) => award.xPostId === "10018"), "a globally discovered verified Ambassador post reaches the existing reward pipeline");
+const checkpoint = now;
+now = new Date(now.getTime() + DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS);
+await worker.recoverOnce();
+assert.equal(globalSearchStarts[1], new Date(checkpoint.getTime() - X_CONTENT_RECOVERY_OVERLAP_MS).toISOString(), "daily recovery searches from the persisted checkpoint with a safe overlap");
+assert.equal(DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, 24 * 60 * 60 * 1000, "global discovery cadence is once per 24 hours");
+
 await assert.rejects(() => evaluateXContent({ content: "Dust Engine", apiKey: undefined }), RetryableQualityError, "missing Gemini configuration fails safely");
 for (const signal of ["Dust Engine", "@DustEngine", "@dustengineapp", "dustengine.xyz", "https://dustengine.xyz/", "#DustEngine", "dustengine"]) assert.equal(hasDiscoverySignal(signal), true, `discovery signal ${signal} should match`);
+for (const term of ['"Dust Engine"', "@DustEngine", "dustengine.xyz", "#DustEngine", "@dustengineapp", '"https://dustengine.xyz/"', "dustengine"]) assert.ok(X_DISCOVERY_RULE.includes(term), `global discovery rule retains ${term}`);
 assert.equal(hasDiscoverySignal("unrelated wallet app"), false);
 assert.equal(awards.every((award) => !("points" in award) && !Object.prototype.hasOwnProperty.call(award, "browserQuality")), true, "the processor accepts no browser-controlled points or scores");
 
