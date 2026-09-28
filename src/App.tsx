@@ -16,6 +16,7 @@ import {
 } from "wagmi";
 import { base } from "wagmi/chains";
 import { injected, coinbaseWallet } from "wagmi/connectors";
+import { farcasterMiniApp } from "@farcaster/miniapp-wagmi-connector";
 import {
   ConnectKitProvider,
   getDefaultConfig,
@@ -208,23 +209,6 @@ const PERMIT2_SIGNATURE_ABI = [
   },
 ] as const;
 
-// --- Config ---
-const config = createConfig(
-  getDefaultConfig({
-    appName: "Dust Cleaning Engine",
-    chains: [base],
-    walletConnectProjectId: "d6cceeb0d16f4b0724853476122511d7",
-    transports: {
-      [base.id]: http("https://mainnet.base.org"),
-    },
-    ssr: false,
-    connectors: [
-      injected(),
-      coinbaseWallet({ appName: "Dust Cleaning Engine" }),
-    ],
-  }),
-);
-
 const queryClient = new QueryClient();
 
 // --- Components ---
@@ -301,10 +285,47 @@ export default function App() {
     return <LegalPages type="privacy" />;
   }
 
-  return <DustEngineApp />;
+  return <MiniAppWalletRuntime />;
 }
 
-function DustEngineApp() {
+function MiniAppWalletRuntime() {
+  const [isFarcasterMiniApp, setIsFarcasterMiniApp] = useState<boolean>();
+
+  useEffect(() => {
+    let isCurrent = true;
+    void sdk.isInMiniApp().then((isInMiniApp) => {
+      if (isCurrent) setIsFarcasterMiniApp(isInMiniApp);
+    });
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
+
+  if (isFarcasterMiniApp === undefined) return null;
+  return <DustEngineApp isFarcasterMiniApp={isFarcasterMiniApp} />;
+}
+
+function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+  const config = useMemo(() => createConfig(
+    getDefaultConfig({
+      appName: "Dust Cleaning Engine",
+      chains: [base],
+      walletConnectProjectId: "d6cceeb0d16f4b0724853476122511d7",
+      transports: {
+        [base.id]: http("https://mainnet.base.org"),
+      },
+      ssr: false,
+      connectors: [
+        ...(isFarcasterMiniApp
+          ? [farcasterMiniApp()]
+          : [
+              injected(),
+              coinbaseWallet({ appName: "Dust Cleaning Engine" }),
+            ]),
+      ],
+    }),
+  ), [isFarcasterMiniApp]);
+
   const [activeSection, setActiveSection] = useState<ProductSection>(() =>
     new URLSearchParams(window.location.search).get("section") === "ambassador" ? "ambassador" : "clean",
   );
@@ -319,6 +340,7 @@ function DustEngineApp() {
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <ConnectKitProvider>
+          <WalletDiagnostics isFarcasterMiniApp={isFarcasterMiniApp} />
           <div className="min-h-screen overflow-x-hidden bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
               <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex items-center justify-between gap-2">
@@ -403,6 +425,23 @@ function DustEngineApp() {
       </QueryClientProvider>
     </WagmiProvider>
   );
+}
+
+function WalletDiagnostics({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+  const { address, chainId, connector } = useAccount();
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !address || !connector) return;
+    console.info("[Dust Engine wallet] connected", {
+      connectorId: connector.id,
+      connectorName: connector.name,
+      chainId,
+      farcasterConnectorActive: connector.id === "farcaster",
+      runningInFarcasterMiniApp: isFarcasterMiniApp,
+    });
+  }, [address, chainId, connector, isFarcasterMiniApp]);
+
+  return null;
 }
 
 function AchievementsSection() {
