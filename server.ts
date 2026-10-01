@@ -20,6 +20,7 @@ import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandida
 import type { VerificationClient } from "./server/tokenVerification";
 import { mountBaseRpcProxy } from "./server/baseRpcProxy";
 import { isAmbassadorAdminTokenAuthorized, readAmbassadorXDiagnostic } from "./server/ambassadorXDiagnostic";
+import { DEFAULT_GEMINI_MODEL, runGeminiDiagnostic } from "./server/ambassadorGeminiDiagnostic";
 
 dotenv.config();
 
@@ -801,6 +802,27 @@ async function startServer() {
       }));
     } catch {
       return res.status(503).json({ error: "X diagnostic data unavailable" });
+    }
+  });
+
+  // TEMPORARY: read-only check for production Gemini model access; remove after diagnosis.
+  app.get("/api/internal/ambassador/gemini-diagnostic", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const effectiveModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+    try {
+      return res.json(await runGeminiDiagnostic(process.env.GEMINI_API_KEY, effectiveModel));
+    } catch {
+      return res.status(200).json({
+        configured: Boolean(process.env.GEMINI_API_KEY),
+        effectiveModel,
+        expectedModel: DEFAULT_GEMINI_MODEL,
+        effectiveModelMatchesExpected: effectiveModel === DEFAULT_GEMINI_MODEL,
+        modelAccess: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
+        generation: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
+      });
     }
   });
 
