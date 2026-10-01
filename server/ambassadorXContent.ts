@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { parseXContentEvaluation, RetryableQualityError, type XContentEvaluation } from "./ambassadorXQuality";
+import { parseXContentEvaluation, RetryableQualityError, type XContentEvaluation, type XQualityFailureDiagnostic } from "./ambassadorXQuality";
 
 type SqliteDatabase = any;
 
@@ -31,9 +31,11 @@ export const DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const X_CONTENT_RECOVERY_OVERLAP_MS = 60 * 60 * 1000;
 const MAX_RECENT_SEARCH_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRY_TICK_MS = 60_000;
-const MAX_RETRIES = 5;
+const MAX_FAST_RETRIES = 5;
 const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 60 * 60 * 1000;
+const SLOW_RETRY_BASE_MS = 24 * 60 * 60 * 1000;
+const SLOW_RETRY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const NEAR_DUPLICATE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const PROCESSING_STALE_MS = 30 * 60 * 1000;
 
@@ -66,6 +68,26 @@ export function initializeXContentTables(db: SqliteDatabase) {
       updated_at TEXT NOT NULL
     );
   `);
+}
+
+export function requeueCandidatesForVerifiedAuthor(db: SqliteDatabase, verifiedXUserId: string, now = new Date()): number {
+  if (typeof verifiedXUserId !== "string" || !verifiedXUserId.trim()) return 0;
+  const timestamp = now.toISOString();
+  const result = db.prepare(`
+    UPDATE ambassador_x_content_candidates
+    SET status = 'evaluation_failed', retry_count = 0, next_retry_at = ?, last_error = NULL,
+      rejection_reason = NULL, processed_at = NULL, updated_at = ?
+    WHERE author_id = ? AND status = 'rejected' AND rejection_reason = 'unverified_or_unapproved_author'
+      AND EXISTS (
+        SELECT 1 FROM ambassadors
+        WHERE x_user_id = ? AND status = 'approved'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM ambassador_activity_events
+        WHERE kind = 'x_content' AND x_post_id = ambassador_x_content_candidates.x_post_id
+      )
+  `).run(timestamp, timestamp, verifiedXUserId, verifiedXUserId);
+  return Number(result.changes) || 0;
 }
 
 export function normalizeXContent(value: string): string {
@@ -179,13 +201,28 @@ export class XContentProcessor {
   private defer(postId: string, error: unknown): ProcessResult {
     const candidate = this.options.db.prepare(`SELECT retry_count FROM ambassador_x_content_candidates WHERE x_post_id = ?`).get(postId) as { retry_count: number } | undefined;
     const retryCount = Math.max(0, Number(candidate?.retry_count) || 0) + 1;
-    if (retryCount > MAX_RETRIES) return this.reject(postId, "automatic_retry_exhausted");
-    const delay = Math.min(RETRY_BASE_MS * (2 ** (retryCount - 1)), RETRY_MAX_MS);
+    const delay = retryCount <= MAX_FAST_RETRIES
+      ? Math.min(RETRY_BASE_MS * (2 ** (retryCount - 1)), RETRY_MAX_MS)
+      : Math.min(SLOW_RETRY_BASE_MS * (2 ** Math.min(retryCount - MAX_FAST_RETRIES - 1, 10)), SLOW_RETRY_MAX_MS);
     const nextRetry = new Date(this.now().getTime() + delay).toISOString();
-    const message = error instanceof Error ? error.message.slice(0, 500) : "temporary_x_or_evaluation_failure";
-    this.options.db.prepare(`UPDATE ambassador_x_content_candidates SET status = 'evaluation_failed', retry_count = ?, next_retry_at = ?, last_error = ?, updated_at = ? WHERE x_post_id = ?`)
-      .run(retryCount, nextRetry, message, this.nowIso(), postId);
-    return { status: "deferred", reason: "temporary_failure" };
+    const qualityDiagnostic: XQualityFailureDiagnostic = error instanceof RetryableQualityError
+      ? error.diagnostic
+      : {
+        category: "evaluation_error",
+        diagnosticClass: "evaluation_failure",
+      };
+    const diagnostic = {
+      category: qualityDiagnostic.category,
+      diagnosticClass: qualityDiagnostic.diagnosticClass,
+      ...(qualityDiagnostic.httpStatus !== undefined ? { httpStatus: qualityDiagnostic.httpStatus } : {}),
+      ...(qualityDiagnostic.providerCode ? { providerCode: qualityDiagnostic.providerCode } : {}),
+      retryAttempt: retryCount,
+    };
+    const lastError = JSON.stringify(diagnostic);
+    this.options.db.prepare(`UPDATE ambassador_x_content_candidates SET status = 'evaluation_failed', retry_count = ?, next_retry_at = ?, last_error = ?, rejection_reason = NULL, updated_at = ? WHERE x_post_id = ?`)
+      .run(retryCount, nextRetry, lastError, this.nowIso(), postId);
+    console.warn("[Ambassador X] candidate processing deferred", { postId, ...diagnostic, nextRetryAt: nextRetry });
+    return { status: "deferred", reason: retryCount <= MAX_FAST_RETRIES ? "fast_retry_scheduled" : "slow_retry_scheduled" };
   }
 
   async processPostId(postId: string, source: string): Promise<ProcessResult> {

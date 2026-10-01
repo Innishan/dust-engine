@@ -13,7 +13,7 @@ import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
-import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
@@ -646,6 +646,12 @@ async function startServer() {
       if (linked.changes !== 1) {
         logXOauthFailure("account linking", undefined, "ambassador_not_updated");
         return oauthRedirect(res, "failed");
+      }
+      try {
+        const requeued = requeueCandidatesForVerifiedAuthor(statsDb, xUser.id);
+        if (requeued > 0) console.log("[X OAuth] queued candidates after verified account link", { candidateCount: requeued });
+      } catch {
+        console.warn("[X OAuth] unable to queue candidates after verified account link");
       }
       console.log("[X OAuth] account linked successfully");
       return oauthRedirect(res, "linked");

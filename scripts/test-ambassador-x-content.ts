@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { evaluateXContent, RetryableQualityError, type XContentEvaluation } from "../server/ambassadorXQuality";
-import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, X_CONTENT_RECOVERY_OVERLAP_MS, X_DISCOVERY_RULE, XContentProcessor, XContentWorker, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, recoverySearchStart, type XPost } from "../server/ambassadorXContent";
+import { classifyGeminiProviderFailure, evaluateXContent, parseXContentEvaluationText, RetryableQualityError, type XContentEvaluation } from "../server/ambassadorXQuality";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, X_CONTENT_RECOVERY_OVERLAP_MS, X_DISCOVERY_RULE, XContentProcessor, XContentWorker, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, requeueCandidatesForVerifiedAuthor, recoverySearchStart, type ProcessResult, type XPost } from "../server/ambassadorXContent";
 
 const database = new Database(":memory:");
 database.exec(`
@@ -18,8 +18,10 @@ const posts = new Map<string, XPost>();
 const failures = new Map<string, Error>();
 let evaluation: XContentEvaluation = highQuality;
 let evaluationFailure: Error | null = null;
+const forcedDuplicateIds = new Set<string>();
 const awards: Array<Record<string, unknown>> = [];
 let getPostCalls = 0;
+const insertAmbassador = database.prepare(`INSERT INTO ambassadors (id, x_user_id, status) VALUES (?, ?, 'approved')`);
 
 const processor = new XContentProcessor({
   db: database,
@@ -30,6 +32,7 @@ const processor = new XContentProcessor({
   recordApprovedActivity: (activity) => {
     assert.equal(activity.kind, "x_content", "approved X posts must be persisted as X-content activity");
     assert.equal(Object.prototype.hasOwnProperty.call(activity, "points"), false, "points are never accepted from caller input");
+    if (forcedDuplicateIds.has(activity.xPostId)) return { status: 200, payload: { duplicate: "existing" } };
     if (database.prepare(`SELECT 1 FROM ambassador_activity_events WHERE x_post_id = ?`).get(activity.xPostId)) return { status: 200, payload: { duplicate: "existing" } };
     database.prepare(`INSERT INTO ambassador_activity_events (id, ambassador_id, kind, x_post_id, x_user_id, x_impressions, x_quality_score, review_status) VALUES (?, ?, 'x_content', ?, ?, ?, ?, 'approved')`)
       .run(activity.id, activity.ambassadorId, activity.xPostId, activity.xUserId, activity.xImpressions, activity.xQualityScore);
@@ -74,6 +77,7 @@ posts.set("10016", post("10016", { text: "https://x.com/DustEngine/status/1", re
 assert.equal((await processor.processPostId("10016", "filtered_stream")).reason, "quote_without_meaningful_commentary", "empty quote commentary is rejected");
 posts.set("10006", post("10006", { text: "Dust Engine airdrop guaranteed profit!!!" }));
 assert.equal((await processor.processPostId("10006", "filtered_stream")).reason, "obvious_spam");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10006'`).get().status, "rejected", "deterministic spam remains a permanent content rejection");
 
 posts.set("10007", post("10007", { text: "Dust Engine helps people find wallet dust, makes Base cleanup easier, and keeps the process straightforward." }));
 assert.equal((await processor.processPostId("10007", "filtered_stream")).status, "approved");
@@ -83,15 +87,132 @@ assert.equal((await processor.processPostId("10008", "filtered_stream")).reason,
 evaluation = { ...highQuality, qualityScore: 39 };
 posts.set("10009", post("10009", { text: "Dust Engine is useful for my wallet cleanup experience." }));
 assert.equal((await processor.processPostId("10009", "filtered_stream")).reason, "below_quality_threshold");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10009'`).get().status, "rejected", "low quality remains a permanent content rejection");
 evaluation = { ...highQuality, relevance: 10, eligible: false, qualityScore: 90 };
 posts.set("10010", post("10010", { text: "dustengine unrelated conversation" }));
 assert.equal((await processor.processPostId("10010", "filtered_stream")).reason, "quality_evaluation_ineligible", "the broad discovery term does not grant eligibility");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10010'`).get().status, "rejected", "irrelevant evaluator decisions remain permanent content rejections");
 evaluation = highQuality;
 
-evaluation = {} as XContentEvaluation;
+const malformedResponse = (() => {
+  try {
+    parseXContentEvaluationText("not-json");
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Malformed evaluator JSON should be retryable");
+})();
+assert.ok(malformedResponse instanceof RetryableQualityError);
+assert.equal(malformedResponse.diagnostic.category, "malformed_response");
+evaluationFailure = malformedResponse;
 posts.set("10014", post("10014", { text: "Dust Engine helped me understand my token balances far better." }));
 assert.equal((await processor.processPostId("10014", "filtered_stream")).status, "deferred", "malformed Gemini output is retryable");
+const malformedCandidate = database.prepare(`SELECT status, last_error, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10014'`).get() as { status: string; last_error: string; rejection_reason: string | null };
+assert.equal(malformedCandidate.status, "evaluation_failed");
+assert.equal(JSON.parse(malformedCandidate.last_error).category, "malformed_response");
+assert.equal(malformedCandidate.rejection_reason, null);
+evaluationFailure = null;
 evaluation = highQuality;
+
+const providerFailure = classifyGeminiProviderFailure(Object.assign(
+  new Error('API_KEY=AIza123456789012345678901234567890 Authorization: Bearer private-token https://user:password@example.test/path {"error":{"message":"response body marker"},"payload":"PRIVATE_PROMPT_PAYLOAD_MARKER"}'),
+  {
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    response: { data: { authorization: "Bearer response-token", url: "https://key:secret@example.test", payload: "PRIVATE_RESPONSE_PAYLOAD_MARKER" } },
+  },
+));
+assert.equal(providerFailure.diagnostic.category, "provider_api_error");
+assert.equal(providerFailure.diagnostic.diagnosticClass, "provider_api_failure");
+assert.equal(providerFailure.diagnostic.httpStatus, 429);
+assert.equal(providerFailure.diagnostic.providerCode, "RESOURCE_EXHAUSTED");
+assert.equal(providerFailure.message, "Gemini evaluation temporarily failed", "the candidate-facing provider error remains concise and stable");
+assert.deepEqual(Object.keys(providerFailure.diagnostic).sort(), ["category", "diagnosticClass", "httpStatus", "providerCode"]);
+evaluationFailure = providerFailure;
+posts.set("10024", post("10024", { text: "Dust Engine made it much easier to clean up forgotten tokens on Base." }));
+const originalWarn = console.warn;
+let capturedDiagnosticLog = "";
+console.warn = (...args: unknown[]) => { capturedDiagnosticLog = JSON.stringify(args); };
+let providerResult: ProcessResult | undefined;
+try {
+  providerResult = await processor.processPostId("10024", "filtered_stream");
+} finally {
+  console.warn = originalWarn;
+}
+assert.equal(providerResult.status, "deferred", "provider failures remain retryable");
+const providerCandidate = database.prepare(`SELECT status, retry_count, next_retry_at, last_error, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10024'`).get() as { status: string; retry_count: number; next_retry_at: string; last_error: string; rejection_reason: string | null };
+const providerDiagnostic = JSON.parse(providerCandidate.last_error);
+assert.equal(providerCandidate.status, "evaluation_failed");
+assert.equal(providerCandidate.retry_count, 1);
+assert.equal(Date.parse(providerCandidate.next_retry_at) - now.getTime(), 60_000, "first fast retry remains delayed by one minute");
+assert.equal(providerDiagnostic.category, "provider_api_error");
+assert.equal(providerDiagnostic.httpStatus, 429);
+assert.equal(providerDiagnostic.providerCode, "RESOURCE_EXHAUSTED");
+assert.equal(providerDiagnostic.retryAttempt, 1);
+assert.deepEqual(Object.keys(providerDiagnostic).sort(), ["category", "diagnosticClass", "httpStatus", "providerCode", "retryAttempt"]);
+assert.equal(providerCandidate.rejection_reason, null);
+for (const sensitiveValue of ["AIza123456789012345678901234567890", "private-token", "response-token", "PRIVATE_PROMPT_PAYLOAD_MARKER", "PRIVATE_RESPONSE_PAYLOAD_MARKER", "user:password", "key:secret", "response body marker"]) {
+  assert.equal(providerCandidate.last_error.includes(sensitiveValue), false, `persisted diagnostics exclude ${sensitiveValue}`);
+  assert.equal(capturedDiagnosticLog.includes(sensitiveValue), false, `server logs exclude ${sensitiveValue}`);
+}
+evaluationFailure = null;
+
+// Exhaust the bounded fast retries, then verify recovery continues on a slow,
+// bounded schedule instead of permanently rejecting the candidate.
+evaluationFailure = classifyGeminiProviderFailure({ status: 503, code: "UNAVAILABLE", message: "temporary provider outage" });
+posts.set("10025", post("10025", { text: "Dust Engine helped me clear forgotten token balances from Base." }));
+assert.equal((await processor.processPostId("10025", "filtered_stream")).status, "deferred");
+for (let attempt = 2; attempt <= 5; attempt += 1) {
+  const dueAt = database.prepare(`SELECT next_retry_at FROM ambassador_x_content_candidates WHERE x_post_id = '10025'`).get() as { next_retry_at: string };
+  now = new Date(dueAt.next_retry_at);
+  assert.equal((await processor.processPostId("10025", "automatic_retry")).status, "deferred");
+  const row = database.prepare(`SELECT retry_count, status FROM ambassador_x_content_candidates WHERE x_post_id = '10025'`).get() as { retry_count: number; status: string };
+  assert.equal(row.retry_count, attempt);
+  assert.equal(row.status, "evaluation_failed");
+}
+let exhaustedFast = database.prepare(`SELECT retry_count, next_retry_at, status, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10025'`).get() as { retry_count: number; next_retry_at: string; status: string; rejection_reason: string | null };
+assert.equal(exhaustedFast.retry_count, 5);
+now = new Date(exhaustedFast.next_retry_at);
+assert.equal((await processor.processPostId("10025", "automatic_retry")).status, "deferred");
+let slowRetry = database.prepare(`SELECT retry_count, next_retry_at, status, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10025'`).get() as { retry_count: number; next_retry_at: string; status: string; rejection_reason: string | null };
+assert.equal(slowRetry.retry_count, 6);
+assert.equal(Date.parse(slowRetry.next_retry_at) - now.getTime(), 24 * 60 * 60 * 1000, "the first retry after five fast attempts waits 24 hours");
+assert.equal(slowRetry.status, "evaluation_failed");
+assert.equal(slowRetry.rejection_reason, null, "exhausted transient retries are not content rejections");
+now = new Date(slowRetry.next_retry_at);
+assert.equal((await processor.processPostId("10025", "automatic_retry")).status, "deferred");
+slowRetry = database.prepare(`SELECT retry_count, next_retry_at, status, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10025'`).get() as { retry_count: number; next_retry_at: string; status: string; rejection_reason: string | null };
+assert.equal(Date.parse(slowRetry.next_retry_at) - now.getTime(), 48 * 60 * 60 * 1000, "slow retry backoff doubles and remains controlled");
+evaluationFailure = null;
+
+// A newly verified exact X author may re-enter the ordinary validation path.
+posts.set("10020", post("10020", { authorId: "late-verified-user", text: "Dust Engine helped me rescue overlooked Base network tokens after I reviewed my address history." }));
+assert.equal((await processor.processPostId("10020", "filtered_stream")).reason, "unverified_or_unapproved_author");
+insertAmbassador.run("ambassador-late", "late-verified-user");
+assert.equal(requeueCandidatesForVerifiedAuthor(database, "late-verified-user", now), 1);
+const requeuedCandidate = database.prepare(`SELECT status, retry_count, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = '10020'`).get() as { status: string; retry_count: number; rejection_reason: string | null };
+assert.deepEqual(requeuedCandidate, { status: "evaluation_failed", retry_count: 0, rejection_reason: null });
+assert.equal((await processor.processPostId("10020", "automatic_retry")).status, "approved", "requeued candidates pass through normal validation and evaluation");
+
+posts.set("10021", post("10021", { authorId: "different-late-user" }));
+assert.equal((await processor.processPostId("10021", "filtered_stream")).reason, "unverified_or_unapproved_author");
+insertAmbassador.run("ambassador-other-late", "verified-other-user");
+assert.equal(requeueCandidatesForVerifiedAuthor(database, "verified-other-user", now), 0, "a different X author is never requeued");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10021'`).get().status, "rejected");
+
+posts.set("10022", post("10022", { authorId: "already-awarded-user" }));
+assert.equal((await processor.processPostId("10022", "filtered_stream")).reason, "unverified_or_unapproved_author");
+insertAmbassador.run("ambassador-already-awarded", "already-awarded-user");
+database.prepare(`INSERT INTO ambassador_activity_events (id, ambassador_id, kind, x_post_id, x_user_id, x_impressions, x_quality_score, review_status) VALUES ('existing-10022', 'ambassador-already-awarded', 'x_content', '10022', 'already-awarded-user', 1, 80, 'approved')`).run();
+assert.equal(requeueCandidatesForVerifiedAuthor(database, "already-awarded-user", now), 0, "existing X activity prevents requeue");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10022'`).get().status, "rejected");
+
+forcedDuplicateIds.add("10023");
+posts.set("10023", post("10023", { text: "Dust Engine clarified the long tail of inactive Base assets while I audited my older wallet activity." }));
+assert.equal((await processor.processPostId("10023", "filtered_stream")).reason, "post_already_awarded", "the final activity persistence duplicate guard remains authoritative");
+assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10023'`).get().status, "rejected");
+assert.equal(awards.some((award) => award.xPostId === "10023"), false, "a duplicate response never increments rewards");
+forcedDuplicateIds.delete("10023");
 
 evaluationFailure = new RetryableQualityError("temporary Gemini outage");
 posts.set("10011", post("10011", { text: "Dust Engine gave me a much clearer way to clean up forgotten Base tokens." }));
@@ -111,7 +232,6 @@ assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidate
 
 // Discovery remains one global query regardless of the number of verified
 // Ambassadors; no user timeline or per-Ambassador request is available here.
-const insertAmbassador = database.prepare(`INSERT INTO ambassadors (id, x_user_id, status) VALUES (?, ?, 'approved')`);
 database.transaction(() => {
   for (let index = 3; index <= 5_000; index += 1) insertAmbassador.run(`ambassador-${index}`, `user-${index}`);
 })();
