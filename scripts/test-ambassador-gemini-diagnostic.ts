@@ -12,11 +12,19 @@ async function main() {
     } };
   });
   assert.equal(receivedKey, "test-key");
-  assert.deepEqual(calls, ["get:gemini-2.5-flash", "generate:gemini-2.5-flash:Reply with the single word OK."]);
+  assert.deepEqual(calls, [
+    "get:gemini-2.5-flash",
+    "generate:gemini-2.5-flash:Reply with the single word OK.",
+    "get:gemini-3.5-flash",
+    "generate:gemini-3.5-flash:Reply with the single word OK.",
+  ]);
   assert.equal(result.configured, true);
   assert.equal(result.effectiveModelMatchesExpected, true);
   assert.equal(result.modelAccess.success, true);
   assert.equal(result.generation.success, true);
+  assert.equal(result.comparisonModel, "gemini-3.5-flash");
+  assert.equal(result.comparisonModelAccess.success, true);
+  assert.equal(result.comparisonGeneration.success, true);
 
   const unsafeError = Object.assign(new Error("API_KEY=fake-secret Authorization: Bearer fake-token https://example.test/key response={\"payload\":\"private\"}"), { status: 404, code: "NOT_FOUND" });
   const failed = await runGeminiDiagnostic("test-key", "gemini-2.5-flash", () => ({ models: {
@@ -26,6 +34,9 @@ async function main() {
   assert.equal(failed.modelAccess.httpStatus, 404);
   assert.equal(failed.modelAccess.providerCode, "NOT_FOUND");
   assert.equal(failed.generation.diagnosticClass, "provider_api_failure");
+  assert.equal(failed.comparisonModel, "gemini-3.5-flash");
+  assert.equal(failed.comparisonModelAccess.httpStatus, 404);
+  assert.equal(failed.comparisonGeneration.providerCode, "NOT_FOUND");
   assert.equal(JSON.stringify(failed).includes("fake-secret"), false);
   assert.equal(JSON.stringify(failed).includes("fake-token"), false);
   assert.equal(JSON.stringify(failed).includes("https://"), false);
@@ -36,6 +47,7 @@ async function main() {
   const unconfigured = await runGeminiDiagnostic(undefined, "gemini-2.5-flash", () => { throw new Error("must not construct client"); });
   assert.equal(unconfigured.configured, false);
   assert.equal(unconfigured.modelAccess.category, "configuration");
+  assert.equal(unconfigured.comparisonModelAccess.category, "configuration");
   console.log("Gemini diagnostic tests passed");
 }
 

@@ -20,7 +20,7 @@ import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandida
 import type { VerificationClient } from "./server/tokenVerification";
 import { mountBaseRpcProxy } from "./server/baseRpcProxy";
 import { isAmbassadorAdminTokenAuthorized, readAmbassadorXDiagnostic } from "./server/ambassadorXDiagnostic";
-import { DEFAULT_GEMINI_MODEL, runGeminiDiagnostic } from "./server/ambassadorGeminiDiagnostic";
+import { COMPARISON_GEMINI_MODEL, DEFAULT_GEMINI_MODEL, runGeminiDiagnostic } from "./server/ambassadorGeminiDiagnostic";
 
 dotenv.config();
 
@@ -822,6 +822,9 @@ async function startServer() {
         effectiveModelMatchesExpected: effectiveModel === DEFAULT_GEMINI_MODEL,
         modelAccess: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
         generation: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
+        comparisonModel: COMPARISON_GEMINI_MODEL,
+        comparisonModelAccess: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
+        comparisonGeneration: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
       });
     }
   });
