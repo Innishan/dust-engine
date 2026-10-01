@@ -90,6 +90,69 @@ export function requeueCandidatesForVerifiedAuthor(db: SqliteDatabase, verifiedX
   return Number(result.changes) || 0;
 }
 
+const TEMPORARY_X_RECOVERY_TARGETS = Object.freeze([
+  Object.freeze({ xPostId: "2104131232456221005", authorId: "932353843899142144", rejectionReason: "automatic_retry_exhausted" }),
+  Object.freeze({ xPostId: "2104114823906906298", authorId: "1656263788335861760", rejectionReason: "unverified_or_unapproved_author" }),
+  Object.freeze({ xPostId: "2104136133391405229", authorId: "1508814615861473297", rejectionReason: "automatic_retry_exhausted" }),
+]);
+
+export type TemporaryXRecoveryResult = {
+  reset: string[];
+  skipped: Array<{ xPostId: string; reason: string }>;
+};
+
+export function resetTemporaryLostXContentCandidates(db: SqliteDatabase, now = new Date()): TemporaryXRecoveryResult {
+  const timestamp = now.toISOString();
+  const reset: string[] = [];
+  const skipped: TemporaryXRecoveryResult["skipped"] = [];
+  const candidateQuery = db.prepare(`SELECT author_id, status, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = ?`);
+  const approvedAmbassadorQuery = db.prepare(`SELECT 1 FROM ambassadors WHERE x_user_id = ? AND status = 'approved'`);
+  const activityQuery = db.prepare(`SELECT 1 FROM ambassador_activity_events WHERE kind = 'x_content' AND x_post_id = ?`);
+  const resetCandidate = db.prepare(`
+    UPDATE ambassador_x_content_candidates
+    SET status = 'evaluation_failed', retry_count = 0, next_retry_at = ?, last_error = NULL,
+      rejection_reason = NULL, processed_at = NULL, updated_at = ?
+    WHERE x_post_id = ? AND author_id = ? AND status = 'rejected' AND rejection_reason = ?
+      AND EXISTS (SELECT 1 FROM ambassadors WHERE x_user_id = ? AND status = 'approved')
+      AND NOT EXISTS (SELECT 1 FROM ambassador_activity_events WHERE kind = 'x_content' AND x_post_id = ?)
+  `);
+
+  db.transaction(() => {
+    for (const target of TEMPORARY_X_RECOVERY_TARGETS) {
+      const candidate = candidateQuery.get(target.xPostId) as { author_id: string | null; status: string; rejection_reason: string | null } | undefined;
+      if (!candidate) {
+        skipped.push({ xPostId: target.xPostId, reason: "candidate_not_found" });
+        continue;
+      }
+      if (candidate.author_id !== target.authorId) {
+        skipped.push({ xPostId: target.xPostId, reason: "author_id_mismatch" });
+        continue;
+      }
+      if (!approvedAmbassadorQuery.get(target.authorId)) {
+        skipped.push({ xPostId: target.xPostId, reason: "ambassador_not_approved" });
+        continue;
+      }
+      if (activityQuery.get(target.xPostId)) {
+        skipped.push({ xPostId: target.xPostId, reason: "activity_exists" });
+        continue;
+      }
+      if (candidate.status !== "rejected") {
+        skipped.push({ xPostId: target.xPostId, reason: "candidate_not_rejected" });
+        continue;
+      }
+      if (candidate.rejection_reason !== target.rejectionReason) {
+        skipped.push({ xPostId: target.xPostId, reason: "historical_reason_mismatch" });
+        continue;
+      }
+      const result = resetCandidate.run(timestamp, timestamp, target.xPostId, target.authorId, target.rejectionReason, target.authorId, target.xPostId);
+      if (result.changes === 1) reset.push(target.xPostId);
+      else skipped.push({ xPostId: target.xPostId, reason: "safeguard_changed" });
+    }
+  })();
+
+  return { reset, skipped };
+}
+
 export function normalizeXContent(value: string): string {
   return value.toLowerCase()
     .replace(/https?:\/\/\S+/g, " ")

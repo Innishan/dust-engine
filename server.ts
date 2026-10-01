@@ -13,7 +13,7 @@ import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
-import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, resetTemporaryLostXContentCandidates, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
@@ -774,6 +774,7 @@ async function startServer() {
     : DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS;
   const xBearerToken = process.env.X_BEARER_TOKEN;
   const geminiApiKey = process.env.GEMINI_API_KEY;
+  let xContentProcessor: XContentProcessor | null = null;
   const xContentWorker = xBearerToken ? (() => {
     const client = new XApiClient(xBearerToken);
     const processor = new XContentProcessor({
@@ -783,6 +784,7 @@ async function startServer() {
       evaluate: ({ content, context }) => evaluateXContent({ content, context, apiKey: geminiApiKey, model: process.env.GEMINI_MODEL }),
       recordApprovedActivity: (activity) => persistAmbassadorActivity(activity),
     });
+    xContentProcessor = processor;
     return new XContentWorker({ db: statsDb, client, processor, recoveryIntervalMs: xContentRecoveryIntervalMs });
   })() : null;
 
@@ -799,6 +801,21 @@ async function startServer() {
       }));
     } catch {
       return res.status(503).json({ error: "X diagnostic data unavailable" });
+    }
+  });
+
+  // TEMPORARY: one-time recovery for the three audited lost X candidates only.
+  app.post("/api/internal/ambassador/x-recovery", async (req, res) => {
+    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (!xContentProcessor) return res.status(503).json({ error: "X processing is not configured" });
+    try {
+      const result = resetTemporaryLostXContentCandidates(statsDb);
+      for (const xPostId of result.reset) await xContentProcessor.processPostId(xPostId, "manual_recovery");
+      return res.json(result);
+    } catch {
+      return res.status(503).json({ error: "Temporary X recovery unavailable" });
     }
   });
 
