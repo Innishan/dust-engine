@@ -10,7 +10,7 @@ import crypto from "crypto";
 import { verifyMessage, isAddress, isHash, createPublicClient, http } from "viem";
 import { base } from "viem/chains";
 import { getStatus, type FullStatusData } from "@lifi/sdk";
-import { verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
+import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
@@ -19,6 +19,7 @@ import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/token
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
 import type { VerificationClient } from "./server/tokenVerification";
 import { mountBaseRpcProxy } from "./server/baseRpcProxy";
+import { isAmbassadorAdminTokenAuthorized, readAmbassadorXDiagnostic } from "./server/ambassadorXDiagnostic";
 
 dotenv.config();
 
@@ -333,7 +334,7 @@ async function startServer() {
       minimumConfirmations: achievementMinimumConfirmations,
     });
     if (!verification.ok) return res.status(400).json({ error: verification.reason });
-    return res.json({ state: persistAchievementEvent({
+    const achievementState = persistAchievementEvent({
       id: `achievement:${verification.eventId}`,
       walletAddress: verification.walletAddress,
       kind: "dust_cleanup",
@@ -345,7 +346,20 @@ async function startServer() {
       // The Base transaction does not contain an authoritative USD valuation.
       cleanValueUsd: 0,
       completedAt: verification.completedAt,
-    }) });
+    });
+    let ambassadorActivity: ReturnType<typeof persistVerifiedCleanDustAmbassadorActivity> | "failed" = "failed";
+    try {
+      ambassadorActivity = persistVerifiedCleanDustAmbassadorActivity(verification, {
+        findApprovedAmbassadorId: (walletAddress) => (getApprovedAmbassadorIdByWallet.get(walletAddress) as { id?: string } | undefined)?.id,
+        persistActivity: persistAmbassadorActivity,
+      });
+    } catch {
+      // Ambassador persistence must not alter the existing achievement response.
+    }
+    if (ambassadorActivity === "failed") {
+      console.error("[Ambassador Clean] verified activity persistence failed");
+    }
+    return res.json({ state: achievementState });
   });
 
   app.post("/api/achievements/verify-bridge", async (req, res) => {
@@ -765,6 +779,22 @@ async function startServer() {
     });
     return new XContentWorker({ db: statsDb, client, processor, recoveryIntervalMs: xContentRecoveryIntervalMs });
   })() : null;
+
+  // TEMPORARY: remove after the three production X posts have been diagnosed.
+  app.get("/api/internal/ambassador/x-diagnostic", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    try {
+      return res.json(readAmbassadorXDiagnostic(statsDb, {
+        automaticDiscoveryEnabled: Boolean(xContentWorker),
+        geminiEvaluationConfigured: Boolean(geminiApiKey),
+      }));
+    } catch {
+      return res.status(503).json({ error: "X diagnostic data unavailable" });
+    }
+  });
 
   app.post("/api/internal/ambassador/verify-clean", async (req, res) => {
     const adminToken = process.env.AMBASSADOR_ADMIN_TOKEN;
