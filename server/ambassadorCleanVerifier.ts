@@ -11,6 +11,40 @@ export type CleanAchievementVerificationResult =
   | { ok: true; eventId: string; walletAddress: string; tokenAddresses: string[]; quantity: number; completedAt: string }
   | { ok: false; reason: string };
 
+export type VerifiedCleanDustAmbassadorActivity = {
+  id: string;
+  ambassadorId: string;
+  kind: "clean_completed";
+  quantity: number;
+  completedAt: string;
+  reviewStatus: "approved";
+};
+
+export function persistVerifiedCleanDustAmbassadorActivity(
+  verification: Extract<CleanAchievementVerificationResult, { ok: true }>,
+  options: {
+    findApprovedAmbassadorId: (walletAddress: string) => string | undefined;
+    persistActivity: (activity: VerifiedCleanDustAmbassadorActivity) => {
+      status: number;
+      payload: Record<string, unknown>;
+    };
+  },
+): "not_ambassador" | "persisted" | "duplicate" | "failed" {
+  const ambassadorId = options.findApprovedAmbassadorId(verification.walletAddress);
+  if (!ambassadorId) return "not_ambassador";
+
+  const result = options.persistActivity({
+    id: verification.eventId,
+    ambassadorId,
+    kind: "clean_completed",
+    quantity: verification.quantity,
+    completedAt: verification.completedAt,
+    reviewStatus: "approved",
+  });
+  if (result.status !== 200) return "failed";
+  return result.payload.duplicate ? "duplicate" : "persisted";
+}
+
 export type BaseRpcClient = {
   getChainId: () => Promise<number>;
   getBlockNumber: () => Promise<bigint>;
