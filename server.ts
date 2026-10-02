@@ -13,14 +13,12 @@ import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
-import { calculateXContentPoints, DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, resetTemporaryLostXContentCandidates, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { calculateXContentPoints, DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
 import type { VerificationClient } from "./server/tokenVerification";
 import { mountBaseRpcProxy } from "./server/baseRpcProxy";
-import { isAmbassadorAdminTokenAuthorized, readAmbassadorXDiagnostic } from "./server/ambassadorXDiagnostic";
-import { COMPARISON_GEMINI_MODEL, DEFAULT_GEMINI_MODEL, runGeminiDiagnostic } from "./server/ambassadorGeminiDiagnostic";
 
 dotenv.config();
 
@@ -768,7 +766,6 @@ async function startServer() {
     : DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS;
   const xBearerToken = process.env.X_BEARER_TOKEN;
   const geminiApiKey = process.env.GEMINI_API_KEY;
-  let xContentProcessor: XContentProcessor | null = null;
   const xContentWorker = xBearerToken ? (() => {
     const client = new XApiClient(xBearerToken);
     const processor = new XContentProcessor({
@@ -777,64 +774,8 @@ async function startServer() {
       evaluate: ({ content, context }) => evaluateXContent({ content, context, apiKey: geminiApiKey, model: process.env.GEMINI_MODEL }),
       recordApprovedActivity: (activity) => persistAmbassadorActivity(activity),
     });
-    xContentProcessor = processor;
     return new XContentWorker({ db: statsDb, client, processor, recoveryIntervalMs: xContentRecoveryIntervalMs });
   })() : null;
-
-  // TEMPORARY: remove after the three production X posts have been diagnosed.
-  app.get("/api/internal/ambassador/x-diagnostic", (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    try {
-      return res.json(readAmbassadorXDiagnostic(statsDb, {
-        automaticDiscoveryEnabled: Boolean(xContentWorker),
-        geminiEvaluationConfigured: Boolean(geminiApiKey),
-      }));
-    } catch {
-      return res.status(503).json({ error: "X diagnostic data unavailable" });
-    }
-  });
-
-  // TEMPORARY: read-only check for production Gemini model access; remove after diagnosis.
-  app.get("/api/internal/ambassador/gemini-diagnostic", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    const effectiveModel = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
-    try {
-      return res.json(await runGeminiDiagnostic(process.env.GEMINI_API_KEY, effectiveModel));
-    } catch {
-      return res.status(200).json({
-        configured: Boolean(process.env.GEMINI_API_KEY),
-        effectiveModel,
-        expectedModel: DEFAULT_GEMINI_MODEL,
-        effectiveModelMatchesExpected: effectiveModel === DEFAULT_GEMINI_MODEL,
-        modelAccess: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
-        generation: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
-        comparisonModel: COMPARISON_GEMINI_MODEL,
-        comparisonModelAccess: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
-        comparisonGeneration: { success: false, category: "evaluation_error", diagnosticClass: "evaluation_failure" },
-      });
-    }
-  });
-
-  // TEMPORARY: one-time recovery for the three audited lost X candidates only.
-  app.post("/api/internal/ambassador/x-recovery", async (req, res) => {
-    if (!isAmbassadorAdminTokenAuthorized(process.env.AMBASSADOR_ADMIN_TOKEN, req.header("x-ambassador-admin-token"))) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    if (!xContentProcessor) return res.status(503).json({ error: "X processing is not configured" });
-    try {
-      const result = resetTemporaryLostXContentCandidates(statsDb);
-      for (const xPostId of result.reset) await xContentProcessor.processPostId(xPostId, "manual_recovery");
-      return res.json(result);
-    } catch {
-      return res.status(503).json({ error: "Temporary X recovery unavailable" });
-    }
-  });
 
   app.post("/api/internal/ambassador/verify-clean", async (req, res) => {
     const adminToken = process.env.AMBASSADOR_ADMIN_TOKEN;

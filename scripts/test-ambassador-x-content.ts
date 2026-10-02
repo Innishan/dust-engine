@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { classifyGeminiProviderFailure, evaluateXContent, parseXContentEvaluationText, RetryableQualityError, type XContentEvaluation } from "../server/ambassadorXQuality";
-import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, X_CONTENT_RECOVERY_OVERLAP_MS, X_DISCOVERY_RULE, XContentProcessor, XContentWorker, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, requeueCandidatesForVerifiedAuthor, resetTemporaryLostXContentCandidates, recoverySearchStart, type ProcessResult, type XPost } from "../server/ambassadorXContent";
+import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, X_CONTENT_RECOVERY_OVERLAP_MS, X_DISCOVERY_RULE, XContentProcessor, XContentWorker, calculateXContentPoints, hasDiscoverySignal, initializeXContentTables, requeueCandidatesForVerifiedAuthor, recoverySearchStart, type ProcessResult, type XPost } from "../server/ambassadorXContent";
 
 const database = new Database(":memory:");
 database.exec(`
@@ -42,73 +42,6 @@ const processor = new XContentProcessor({
 
 function post(id: string, overrides: Partial<XPost> = {}): XPost {
   return { id, authorId: "user-1", text: "Dust Engine found forgotten ERC20 dust in my Base wallet and made cleanup much simpler.", isRepost: false, isQuote: false, impressions: 999, createdAt: now.toISOString(), ...overrides };
-}
-
-const temporaryRecoveryTargets = [
-  { xPostId: "2104131232456221005", authorId: "932353843899142144", discoveredAt: "2026-09-27T08:49:17.858Z" },
-  { xPostId: "2104114823906906298", authorId: "1656263788335861760", discoveredAt: "2026-09-27T07:44:05.631Z" },
-] as const;
-
-function createTemporaryRecoveryDatabase() {
-  const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE ambassadors (id TEXT PRIMARY KEY, x_user_id TEXT UNIQUE, status TEXT NOT NULL);
-    CREATE TABLE ambassador_activity_events (id TEXT PRIMARY KEY, ambassador_id TEXT NOT NULL, kind TEXT NOT NULL, x_post_id TEXT, review_status TEXT NOT NULL);
-  `);
-  initializeXContentTables(db);
-  return db;
-}
-
-function insertTemporaryRecoveryTarget(db: Database.Database, target: typeof temporaryRecoveryTargets[number], overrides: { authorId?: string; ambassadorXUserId?: string; ambassadorStatus?: string; status?: string; retryCount?: number; lastError?: string | null; rejectionReason?: string | null; discoverySource?: string; discoveredAt?: string; activity?: boolean } = {}) {
-  db.prepare(`INSERT INTO ambassadors (id, x_user_id, status) VALUES (?, ?, ?)`).run(`amb-${target.xPostId}`, overrides.ambassadorXUserId || target.authorId, overrides.ambassadorStatus || "approved");
-  db.prepare(`INSERT INTO ambassador_x_content_candidates (x_post_id, author_id, discovery_source, status, retry_count, next_retry_at, last_error, rejection_reason, discovered_at, processed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '2026-09-01T00:00:00.000Z', ?, ?, ?, '2026-09-28T00:00:00.000Z', '2026-09-27T00:00:00.000Z', '2026-09-28T00:00:00.000Z')`)
-    .run(target.xPostId, overrides.authorId || target.authorId, overrides.discoverySource || "filtered_stream", overrides.status || "rejected", overrides.retryCount ?? 0, overrides.lastError ?? null, overrides.rejectionReason ?? "quality_evaluation_ineligible", overrides.discoveredAt || target.discoveredAt);
-  if (overrides.activity) db.prepare(`INSERT INTO ambassador_activity_events (id, ambassador_id, kind, x_post_id, review_status) VALUES (?, ?, 'x_content', ?, 'approved')`).run(`activity-${target.xPostId}`, `amb-${target.xPostId}`, target.xPostId);
-}
-
-const recoveryDb = createTemporaryRecoveryDatabase();
-for (const target of temporaryRecoveryTargets) insertTemporaryRecoveryTarget(recoveryDb, target);
-const recoveryNow = new Date("2026-10-01T12:34:56.000Z");
-const recoveryResult = resetTemporaryLostXContentCandidates(recoveryDb, recoveryNow);
-assert.deepEqual(recoveryResult, { reset: temporaryRecoveryTargets.map((target) => target.xPostId), skipped: [] }, "both exact allowlisted candidates reset when every safeguard matches");
-for (const target of temporaryRecoveryTargets) {
-  const row = recoveryDb.prepare(`SELECT status, retry_count, next_retry_at, last_error, rejection_reason, processed_at, updated_at FROM ambassador_x_content_candidates WHERE x_post_id = ?`).get(target.xPostId) as { status: string; retry_count: number; next_retry_at: string; last_error: string | null; rejection_reason: string | null; processed_at: string | null; updated_at: string };
-  assert.deepEqual(row, { status: "evaluation_failed", retry_count: 0, next_retry_at: recoveryNow.toISOString(), last_error: null, rejection_reason: null, processed_at: null, updated_at: recoveryNow.toISOString() });
-}
-assert.equal(recoveryDb.prepare(`SELECT COUNT(*) AS count FROM ambassador_activity_events`).get().count, 0, "reset creates no activity or points");
-for (const target of temporaryRecoveryTargets) {
-  recoveryDb.prepare(`UPDATE ambassador_x_content_candidates SET status = 'approved' WHERE x_post_id = ?`).run(target.xPostId);
-  recoveryDb.prepare(`INSERT INTO ambassador_activity_events (id, ambassador_id, kind, x_post_id, review_status) VALUES (?, ?, 'x_content', ?, 'approved')`).run(`processed-${target.xPostId}`, `amb-${target.xPostId}`, target.xPostId);
-}
-const repeatRecovery = resetTemporaryLostXContentCandidates(recoveryDb, recoveryNow);
-assert.equal(repeatRecovery.reset.length, 0, "a repeated invocation cannot reset candidates or reprocess completed posts");
-assert.equal(repeatRecovery.skipped.length, temporaryRecoveryTargets.length);
-assert.equal(recoveryDb.prepare(`SELECT COUNT(*) AS count FROM ambassador_activity_events`).get().count, temporaryRecoveryTargets.length, "repeated recovery does not duplicate processed activities");
-recoveryDb.close();
-
-const unlistedDb = createTemporaryRecoveryDatabase();
-unlistedDb.prepare(`INSERT INTO ambassador_x_content_candidates (x_post_id, author_id, discovery_source, status, rejection_reason, discovered_at, created_at, updated_at) VALUES ('9999999999999999999', 'unlisted-author', 'filtered_stream', 'rejected', 'automatic_retry_exhausted', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`).run();
-const unlistedResult = resetTemporaryLostXContentCandidates(unlistedDb, recoveryNow);
-assert.equal(unlistedResult.reset.length, 0, "unlisted post IDs are never reset");
-assert.equal(unlistedDb.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '9999999999999999999'`).get().status, "rejected");
-unlistedDb.close();
-
-for (const scenario of [
-  { label: "wrong author", overrides: { authorId: "wrong-author" }, reason: "author_id_mismatch" },
-  { label: "unapproved Ambassador", overrides: { ambassadorStatus: "pending" }, reason: "ambassador_not_approved" },
-  { label: "existing X activity", overrides: { activity: true }, reason: "activity_exists" },
-  { label: "mismatched Ambassador X user ID", overrides: { ambassadorXUserId: "different-author" }, reason: "ambassador_not_approved" },
-  { label: "wrong discovery source", overrides: { discoverySource: "recent_search" }, reason: "historical_candidate_mismatch" },
-  { label: "wrong discovered timestamp", overrides: { discoveredAt: "2026-09-28T00:00:00.000Z" }, reason: "historical_candidate_mismatch" },
-  { label: "wrong rejection reason", overrides: { rejectionReason: "automatic_retry_exhausted" }, reason: "rejection_reason_mismatch" },
-  { label: "candidate no longer rejected", overrides: { status: "approved" }, reason: "candidate_not_rejected" },
-]) {
-  const db = createTemporaryRecoveryDatabase();
-  insertTemporaryRecoveryTarget(db, temporaryRecoveryTargets[0], scenario.overrides);
-  const result = resetTemporaryLostXContentCandidates(db, recoveryNow);
-  assert.ok(result.skipped.some((entry) => entry.xPostId === temporaryRecoveryTargets[0].xPostId && entry.reason === scenario.reason), `${scenario.label} prevents recovery reset`);
-  assert.equal(result.reset.includes(temporaryRecoveryTargets[0].xPostId), false);
-  db.close();
 }
 
 posts.set("10001", post("10001"));
