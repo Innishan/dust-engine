@@ -91,25 +91,9 @@ export function requeueCandidatesForVerifiedAuthor(db: SqliteDatabase, verifiedX
 }
 
 const TEMPORARY_X_RECOVERY_TARGETS = Object.freeze([
-  Object.freeze({ xPostId: "2104131232456221005", authorId: "932353843899142144", discoveredAt: "2026-09-27T08:49:17.858Z" }),
-  Object.freeze({ xPostId: "2104114823906906298", authorId: "1656263788335861760", discoveredAt: "2026-09-27T07:44:05.631Z" }),
-  Object.freeze({ xPostId: "2104136133391405229", authorId: "1508814615861473297", discoveredAt: "2026-09-27T09:08:46.278Z" }),
+  Object.freeze({ xPostId: "2104131232456221005", authorId: "932353843899142144", discoveredAt: "2026-09-27T08:49:17.858Z", rejectionReason: "quality_evaluation_ineligible" }),
+  Object.freeze({ xPostId: "2104114823906906298", authorId: "1656263788335861760", discoveredAt: "2026-09-27T07:44:05.631Z", rejectionReason: "quality_evaluation_ineligible" }),
 ]);
-
-const TEMPORARY_X_RECOVERY_RETRY_COUNT = 6;
-
-function isExpectedHistoricalGeminiFailure(lastError: string | null): boolean {
-  if (!lastError) return false;
-  try {
-    const diagnostic = JSON.parse(lastError) as Record<string, unknown>;
-    return diagnostic.category === "provider_api_error"
-      && diagnostic.diagnosticClass === "provider_api_failure"
-      && diagnostic.httpStatus === 404
-      && diagnostic.retryAttempt === TEMPORARY_X_RECOVERY_RETRY_COUNT;
-  } catch {
-    return false;
-  }
-}
 
 export type TemporaryXRecoveryResult = {
   reset: string[];
@@ -120,7 +104,7 @@ export function resetTemporaryLostXContentCandidates(db: SqliteDatabase, now = n
   const timestamp = now.toISOString();
   const reset: string[] = [];
   const skipped: TemporaryXRecoveryResult["skipped"] = [];
-  const candidateQuery = db.prepare(`SELECT author_id, discovery_source, discovered_at, status, retry_count, last_error, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = ?`);
+  const candidateQuery = db.prepare(`SELECT author_id, discovery_source, discovered_at, status, rejection_reason FROM ambassador_x_content_candidates WHERE x_post_id = ?`);
   const approvedAmbassadorQuery = db.prepare(`SELECT 1 FROM ambassadors WHERE x_user_id = ? AND status = 'approved'`);
   const activityQuery = db.prepare(`SELECT 1 FROM ambassador_activity_events WHERE kind = 'x_content' AND x_post_id = ?`);
   const resetCandidate = db.prepare(`
@@ -128,14 +112,14 @@ export function resetTemporaryLostXContentCandidates(db: SqliteDatabase, now = n
     SET status = 'evaluation_failed', retry_count = 0, next_retry_at = ?, last_error = NULL,
       rejection_reason = NULL, processed_at = NULL, updated_at = ?
     WHERE x_post_id = ? AND author_id = ? AND discovery_source = 'filtered_stream' AND discovered_at = ?
-      AND status = 'evaluation_failed' AND retry_count = ? AND rejection_reason IS NULL AND last_error = ?
+      AND status = 'rejected' AND rejection_reason = ?
       AND EXISTS (SELECT 1 FROM ambassadors WHERE x_user_id = ? AND status = 'approved')
       AND NOT EXISTS (SELECT 1 FROM ambassador_activity_events WHERE kind = 'x_content' AND x_post_id = ?)
   `);
 
   db.transaction(() => {
     for (const target of TEMPORARY_X_RECOVERY_TARGETS) {
-      const candidate = candidateQuery.get(target.xPostId) as { author_id: string | null; discovery_source: string; discovered_at: string; status: string; retry_count: number; last_error: string | null; rejection_reason: string | null } | undefined;
+      const candidate = candidateQuery.get(target.xPostId) as { author_id: string | null; discovery_source: string; discovered_at: string; status: string; rejection_reason: string | null } | undefined;
       if (!candidate) {
         skipped.push({ xPostId: target.xPostId, reason: "candidate_not_found" });
         continue;
@@ -156,16 +140,12 @@ export function resetTemporaryLostXContentCandidates(db: SqliteDatabase, now = n
         skipped.push({ xPostId: target.xPostId, reason: "historical_candidate_mismatch" });
         continue;
       }
-      if (candidate.status !== "evaluation_failed") {
-        skipped.push({ xPostId: target.xPostId, reason: "candidate_not_evaluation_failed" });
+      if (candidate.status !== "rejected") {
+        skipped.push({ xPostId: target.xPostId, reason: "candidate_not_rejected" });
         continue;
       }
-      if (candidate.retry_count !== TEMPORARY_X_RECOVERY_RETRY_COUNT || candidate.rejection_reason !== null) {
-        skipped.push({ xPostId: target.xPostId, reason: "retry_state_mismatch" });
-        continue;
-      }
-      if (!isExpectedHistoricalGeminiFailure(candidate.last_error)) {
-        skipped.push({ xPostId: target.xPostId, reason: "historical_gemini_failure_mismatch" });
+      if (candidate.rejection_reason !== target.rejectionReason) {
+        skipped.push({ xPostId: target.xPostId, reason: "rejection_reason_mismatch" });
         continue;
       }
       const result = resetCandidate.run(
@@ -174,8 +154,7 @@ export function resetTemporaryLostXContentCandidates(db: SqliteDatabase, now = n
         target.xPostId,
         target.authorId,
         target.discoveredAt,
-        TEMPORARY_X_RECOVERY_RETRY_COUNT,
-        candidate.last_error,
+        target.rejectionReason,
         target.authorId,
         target.xPostId,
       );
