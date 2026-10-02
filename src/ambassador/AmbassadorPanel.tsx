@@ -109,7 +109,7 @@ export default function AmbassadorPanel() {
     </div>
 
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
-      <Leaderboard entries={entries} isLoading={isLoading} isRefreshing={isRefreshing} updatedAt={updatedAt} onRefresh={() => void loadLeaderboard(true)} />
+      <Leaderboard entries={entries} walletAddress={address} isLoading={isLoading} isRefreshing={isRefreshing} updatedAt={updatedAt} onRefresh={() => void loadLeaderboard(true)} />
       <ProfileCard connected={isConnected} profile={profile} isActivating={isActivating} onActivate={() => void activateWallet()} onConnectX={() => { window.location.assign("/api/auth/x/start"); }} message={message} />
     </div>
     {rulesOpen && <RulesModal onClose={() => setRulesOpen(false)} />}
@@ -125,8 +125,59 @@ function RulesModal({ onClose }: { onClose: () => void }) {
   return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 backdrop-blur-sm sm:items-center sm:p-6" role="presentation" onMouseDown={onClose}><section role="dialog" aria-modal="true" aria-labelledby="ambassador-x-rules" className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-3xl border border-emerald-500/25 bg-zinc-900 p-5 shadow-2xl shadow-black/60 sm:max-h-[calc(100dvh-3rem)] sm:p-7" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] text-emerald-400">Ambassador Program</p><h3 id="ambassador-x-rules" className="mt-2 text-xl font-black uppercase italic tracking-tight text-zinc-100">How to earn X points</h3></div><button type="button" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-700 text-zinc-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300" aria-label="Close rules"><X size={17} /></button></div><ul className="mt-6 space-y-3 text-sm leading-6 text-zinc-300"><li>• Connect your verified X account.</li><li>• Share original, useful perspectives or real experiences about Dust Engine.</li><li>• Include a recognizable Dust Engine signal so your post can be found—for example, “Dust Engine”, @DustEngine, @dustengineapp, dustengine.xyz, or #DustEngine. These are examples; no individual tag or hashtag is required.</li><li>• Pure retweets/reposts, empty mentions, spam, copied content, and repetitive posts do not qualify.</li><li>• Meaningful quote-post commentary may qualify; a quote post without substantive commentary does not.</li><li>• Genuine qualifying Dust Engine X content earns points automatically. Each post can qualify only once.</li><li>• Points: 100 base points + 2 points per quality point + 1 point per 100 impressions.</li><li>• No manual submission is required.</li></ul><div className="mt-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">After X verification, qualifying public posts are detected automatically. You do not need to submit them manually.</div><button type="button" onClick={onClose} className="mt-6 w-full rounded-xl bg-emerald-500 px-4 py-3 text-xs font-black uppercase tracking-wide text-zinc-950 transition-colors hover:bg-emerald-400">Got it</button></section></div>;
 }
 
-function Leaderboard({ entries, isLoading, isRefreshing, updatedAt, onRefresh }: { entries: LeaderboardEntry[]; isLoading: boolean; isRefreshing: boolean; updatedAt: string | null; onRefresh: () => void }) {
-  return <div className="min-w-0 overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 shadow-xl"><div className="flex items-center justify-between gap-4 border-b border-zinc-800 px-5 py-4 sm:px-6"><div className="min-w-0"><h3 className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-zinc-100"><Trophy size={17} className="shrink-0 text-emerald-400" /> Season 1 Leaderboard</h3><p className="mt-1 text-xs text-zinc-500">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Updated —"}</p></div><button type="button" onClick={onRefresh} disabled={isRefreshing} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-700 text-zinc-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400 disabled:opacity-50" aria-label="Refresh leaderboard"><RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} /></button></div><div className="hidden min-w-0 md:block"><table className="w-full table-fixed text-left text-xs sm:text-sm"><colgroup><col className="w-12 sm:w-16" /><col /><col className="w-16 sm:w-20" /><col className="w-16 sm:w-20" /><col className="w-16 sm:w-20" /></colgroup><thead className="bg-zinc-950/50 text-[9px] font-mono uppercase tracking-wide text-zinc-500 sm:text-[10px] sm:tracking-wider"><tr><th className="px-2 py-3 font-medium sm:px-4">Rank</th><th className="px-2 py-3 font-medium">Creator</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium">Points</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium">Referrals</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium sm:px-4">Volume</th></tr></thead><tbody className="divide-y divide-zinc-800/80">{entries.map((entry) => { const identity = leaderboardIdentity(entry); return <tr key={entry.rank} className="text-zinc-300"><td className="whitespace-nowrap px-2 py-4 font-mono text-zinc-500 sm:px-4">#{entry.rank} {entry.isTop50 && <Trophy className="ml-0.5 inline text-emerald-400" size={13} aria-label="Top 50" />}</td><td className="min-w-0 px-2 py-4"><p className="truncate font-bold text-zinc-100" title={identity}>{identity}</p></td><td className="whitespace-nowrap px-2 py-4 text-right font-mono font-bold text-emerald-400">{formatNumber(entry.points)}</td><td className="whitespace-nowrap px-2 py-4 text-right font-mono">{formatNumber(entry.referrals)}</td><td className="whitespace-nowrap px-2 py-4 text-right font-mono sm:px-4">{formatUsd(entry.volumeUsd)}</td></tr>; })}</tbody></table></div><div className="divide-y divide-zinc-800 md:hidden">{entries.map((entry) => { const identity = leaderboardIdentity(entry); return <article key={entry.rank} className="min-w-0 p-4"><div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0 flex-1"><p className="font-mono text-xs text-zinc-500">#{entry.rank} {entry.isTop50 && <span className="text-emerald-400">· Top 50</span>}</p><p className="mt-1 truncate font-bold text-zinc-100" title={identity}>{identity}</p></div><p className="shrink-0 whitespace-nowrap font-mono font-bold text-emerald-400">{formatNumber(entry.points)} pts</p></div><dl className="mt-4 grid grid-cols-2 gap-2 text-center text-xs"><Metric label="Refs" value={formatNumber(entry.referrals)} /><Metric label="Volume" value={formatUsd(entry.volumeUsd)} /></dl></article>; })}</div><p className="px-6 py-3 text-xs text-zinc-500">Volume includes verified Bridge USD volume. Verified Clean Dust USD volume will be included when an authoritative server-side valuation source is available.</p>{isLoading && <p className="px-6 py-10 text-center text-sm text-zinc-500">Loading verified leaderboard…</p>}</div>;
+function Leaderboard({ entries, walletAddress, isLoading, isRefreshing, updatedAt, onRefresh }: { entries: LeaderboardEntry[]; walletAddress?: string; isLoading: boolean; isRefreshing: boolean; updatedAt: string | null; onRefresh: () => void }) {
+  const pageSize = 10;
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.ceil(entries.length / pageSize);
+  const validPageCount = Math.max(1, totalPages);
+  const page = Math.min(currentPage, validPageCount);
+  const pageEntries = entries.slice((page - 1) * pageSize, page * pageSize);
+  const connectedEntry = walletAddress
+    ? entries.find((entry) => entry.walletAddress.toLowerCase() === walletAddress.toLowerCase())
+    : undefined;
+
+  useEffect(() => setCurrentPage(1), [entries]);
+  useEffect(() => {
+    setCurrentPage((current) => Math.min(current, validPageCount));
+  }, [validPageCount]);
+
+  return <div className="min-w-0 overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900 shadow-xl">
+    <div className="flex items-center justify-between gap-4 border-b border-zinc-800 px-5 py-4 sm:px-6">
+      <div className="min-w-0">
+        <h3 className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-zinc-100"><Trophy size={17} className="shrink-0 text-emerald-400" /> Season 1 Leaderboard</h3>
+        <p className="mt-1 text-xs text-zinc-500">{updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Updated —"}</p>
+      </div>
+      <button type="button" onClick={onRefresh} disabled={isRefreshing} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-700 text-zinc-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-400 disabled:opacity-50" aria-label="Refresh leaderboard"><RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} /></button>
+    </div>
+
+    {walletAddress && <div className="border-b border-zinc-800 px-4 py-3 sm:px-6">
+      <div className="flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-mono font-bold uppercase tracking-[0.18em] text-emerald-400">Your Rank</p>
+          <p className="mt-0.5 truncate font-mono text-xl font-black text-zinc-100">{connectedEntry ? `#${connectedEntry.rank}` : "Not ranked"}</p>
+        </div>
+        {connectedEntry && <p className="shrink-0 text-right font-mono text-xs font-bold uppercase tracking-wide text-emerald-300">{formatNumber(connectedEntry.points)}<span className="ml-1 text-[10px] text-zinc-400">Points</span></p>}
+      </div>
+    </div>}
+
+    <div className="hidden min-w-0 md:block">
+      <table className="w-full table-fixed text-left text-xs sm:text-sm">
+        <colgroup><col className="w-12 sm:w-16" /><col /><col className="w-16 sm:w-20" /><col className="w-16 sm:w-20" /><col className="w-16 sm:w-20" /></colgroup>
+        <thead className="bg-zinc-950/50 text-[9px] font-mono uppercase tracking-wide text-zinc-500 sm:text-[10px] sm:tracking-wider"><tr><th className="px-2 py-3 font-medium sm:px-4">Rank</th><th className="px-2 py-3 font-medium">Creator</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium">Points</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium">Referrals</th><th className="whitespace-nowrap px-2 py-3 text-right font-medium sm:px-4">Volume</th></tr></thead>
+        <tbody className="divide-y divide-zinc-800/80">{pageEntries.map((entry) => { const identity = leaderboardIdentity(entry); return <tr key={entry.rank} className="text-zinc-300"><td className="whitespace-nowrap px-2 py-4 font-mono text-zinc-500 sm:px-4">#{entry.rank} {entry.isTop50 && <Trophy className="ml-0.5 inline text-emerald-400" size={13} aria-label="Top 50" />}</td><td className="min-w-0 px-2 py-4"><p className="truncate font-bold text-zinc-100" title={identity}>{identity}</p></td><td className="whitespace-nowrap px-2 py-4 text-right font-mono font-bold text-emerald-400">{formatNumber(entry.points)}</td><td className="whitespace-nowrap px-2 py-4 text-right font-mono">{formatNumber(entry.referrals)}</td><td className="whitespace-nowrap px-2 py-4 text-right font-mono sm:px-4">{formatUsd(entry.volumeUsd)}</td></tr>; })}</tbody>
+      </table>
+    </div>
+    <div className="divide-y divide-zinc-800 md:hidden">{pageEntries.map((entry) => { const identity = leaderboardIdentity(entry); return <article key={entry.rank} className="min-w-0 p-4"><div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0 flex-1"><p className="font-mono text-xs text-zinc-500">#{entry.rank} {entry.isTop50 && <span className="text-emerald-400">· Top 50</span>}</p><p className="mt-1 truncate font-bold text-zinc-100" title={identity}>{identity}</p></div><p className="shrink-0 whitespace-nowrap font-mono font-bold text-emerald-400">{formatNumber(entry.points)} pts</p></div><dl className="mt-4 grid grid-cols-2 gap-2 text-center text-xs"><Metric label="Refs" value={formatNumber(entry.referrals)} /><Metric label="Volume" value={formatUsd(entry.volumeUsd)} /></dl></article>; })}</div>
+
+    {totalPages > 0 && <nav aria-label="Leaderboard pages" className="flex items-center justify-between gap-3 border-t border-zinc-800 px-4 py-3 sm:px-6">
+      <button type="button" onClick={() => setCurrentPage((current) => Math.max(1, current - 1))} disabled={page <= 1} className="rounded-xl border border-zinc-700 px-3 py-2 text-xs font-bold text-zinc-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+      <p className="text-center text-xs font-mono text-zinc-400">Page {page} of {totalPages}</p>
+      <button type="button" onClick={() => setCurrentPage((current) => Math.min(validPageCount, current + 1))} disabled={page >= totalPages} className="rounded-xl border border-zinc-700 px-3 py-2 text-xs font-bold text-zinc-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
+    </nav>}
+
+    <p className="px-6 py-3 text-xs text-zinc-500">Volume includes verified Bridge USD volume. Verified Clean Dust USD volume will be included when an authoritative server-side valuation source is available.</p>
+    {isLoading && <p className="px-6 py-10 text-center text-sm text-zinc-500">Loading verified leaderboard…</p>}
+  </div>;
 }
 
 function ProfileCard({ connected, profile, isActivating, onActivate, onConnectX, message }: { connected: boolean; profile: AmbassadorProfile | null; isActivating: boolean; onActivate: () => void; onConnectX: () => void; message: string | null }) {
