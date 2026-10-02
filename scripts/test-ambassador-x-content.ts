@@ -46,9 +46,9 @@ function post(id: string, overrides: Partial<XPost> = {}): XPost {
 }
 
 const temporaryRecoveryTargets = [
-  { xPostId: "2104131232456221005", authorId: "932353843899142144", rejectionReason: "automatic_retry_exhausted" },
-  { xPostId: "2104114823906906298", authorId: "1656263788335861760", rejectionReason: "unverified_or_unapproved_author" },
-  { xPostId: "2104136133391405229", authorId: "1508814615861473297", rejectionReason: "automatic_retry_exhausted" },
+  { xPostId: "2104131232456221005", authorId: "932353843899142144", discoveredAt: "2026-09-27T08:49:17.858Z" },
+  { xPostId: "2104114823906906298", authorId: "1656263788335861760", discoveredAt: "2026-09-27T07:44:05.631Z" },
+  { xPostId: "2104136133391405229", authorId: "1508814615861473297", discoveredAt: "2026-09-27T09:08:46.278Z" },
 ] as const;
 
 function createTemporaryRecoveryDatabase() {
@@ -61,10 +61,13 @@ function createTemporaryRecoveryDatabase() {
   return db;
 }
 
-function insertTemporaryRecoveryTarget(db: Database.Database, target: typeof temporaryRecoveryTargets[number], overrides: { authorId?: string; ambassadorStatus?: string; status?: string; rejectionReason?: string; activity?: boolean } = {}) {
+function insertTemporaryRecoveryTarget(db: Database.Database, target: typeof temporaryRecoveryTargets[number], overrides: { authorId?: string; ambassadorStatus?: string; status?: string; retryCount?: number; lastError?: string | null; rejectionReason?: string | null; discoverySource?: string; discoveredAt?: string; activity?: boolean } = {}) {
   db.prepare(`INSERT INTO ambassadors (id, x_user_id, status) VALUES (?, ?, ?)`).run(`amb-${target.xPostId}`, target.authorId, overrides.ambassadorStatus || "approved");
-  db.prepare(`INSERT INTO ambassador_x_content_candidates (x_post_id, author_id, discovery_source, status, retry_count, next_retry_at, last_error, rejection_reason, discovered_at, processed_at, created_at, updated_at) VALUES (?, ?, 'filtered_stream', ?, 5, '2026-09-01T00:00:00.000Z', 'old diagnostic', ?, '2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z', '2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z')`)
-    .run(target.xPostId, overrides.authorId || target.authorId, overrides.status || "rejected", overrides.rejectionReason || target.rejectionReason);
+  const lastError = Object.prototype.hasOwnProperty.call(overrides, "lastError")
+    ? overrides.lastError
+    : JSON.stringify({ category: "provider_api_error", diagnosticClass: "provider_api_failure", httpStatus: 404, retryAttempt: 6 });
+  db.prepare(`INSERT INTO ambassador_x_content_candidates (x_post_id, author_id, discovery_source, status, retry_count, next_retry_at, last_error, rejection_reason, discovered_at, processed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '2026-09-01T00:00:00.000Z', ?, ?, ?, '2026-09-28T00:00:00.000Z', '2026-09-27T00:00:00.000Z', '2026-09-28T00:00:00.000Z')`)
+    .run(target.xPostId, overrides.authorId || target.authorId, overrides.discoverySource || "filtered_stream", overrides.status || "evaluation_failed", overrides.retryCount ?? 6, lastError, overrides.rejectionReason ?? null, overrides.discoveredAt || target.discoveredAt);
   if (overrides.activity) db.prepare(`INSERT INTO ambassador_activity_events (id, ambassador_id, kind, x_post_id, review_status) VALUES (?, ?, 'x_content', ?, 'approved')`).run(`activity-${target.xPostId}`, `amb-${target.xPostId}`, target.xPostId);
 }
 
@@ -94,8 +97,11 @@ for (const scenario of [
   { label: "wrong author", overrides: { authorId: "wrong-author" }, reason: "author_id_mismatch" },
   { label: "unapproved Ambassador", overrides: { ambassadorStatus: "pending" }, reason: "ambassador_not_approved" },
   { label: "existing X activity", overrides: { activity: true }, reason: "activity_exists" },
-  { label: "wrong historical rejection reason", overrides: { rejectionReason: "below_quality_threshold" }, reason: "historical_reason_mismatch" },
-  { label: "candidate no longer rejected", overrides: { status: "approved" }, reason: "candidate_not_rejected" },
+  { label: "unrelated evaluation_failed candidate", overrides: { discoveredAt: "2026-09-28T00:00:00.000Z" }, reason: "historical_candidate_mismatch" },
+  { label: "wrong failure diagnostic", overrides: { lastError: JSON.stringify({ category: "provider_api_error", diagnosticClass: "provider_api_failure", httpStatus: 400, retryAttempt: 6 }) }, reason: "historical_gemini_failure_mismatch" },
+  { label: "wrong retry count", overrides: { retryCount: 5 }, reason: "retry_state_mismatch" },
+  { label: "non-null rejection reason", overrides: { rejectionReason: "automatic_retry_exhausted" }, reason: "retry_state_mismatch" },
+  { label: "candidate no longer evaluation_failed", overrides: { status: "approved" }, reason: "candidate_not_evaluation_failed" },
 ]) {
   const db = createTemporaryRecoveryDatabase();
   insertTemporaryRecoveryTarget(db, temporaryRecoveryTargets[0], scenario.overrides);
