@@ -27,7 +27,6 @@ const processor = new XContentProcessor({
   db: database,
   client: { getPost: async (id) => { getPostCalls += 1; const failure = failures.get(id); if (failure) throw failure; return posts.get(id) || null; } },
   evaluate: async () => { if (evaluationFailure) throw evaluationFailure; return evaluation; },
-  qualityThreshold: 40,
   now: () => now,
   recordApprovedActivity: (activity) => {
     assert.equal(activity.kind, "x_content", "approved X posts must be persisted as X-content activity");
@@ -118,7 +117,13 @@ assert.equal(awards[0].xImpressions, 999, "impressions must come from the author
 assert.equal(awards[0].xQualityScore, 80, "quality comes from the server-side evaluator");
 assert.equal((await processor.processPostId("10001", "recent_search")).status, "duplicate", "repeated stream/recovery delivery cannot award twice");
 assert.equal(awards.length, 1);
-assert.equal(calculateXContentPoints(80, 999), 800, "server scoring formula remains unchanged");
+assert.equal(calculateXContentPoints(0, 0), 100, "quality zero still receives the base points");
+assert.equal(calculateXContentPoints(50, 1000), 210);
+assert.equal(calculateXContentPoints(60, 565), 225);
+assert.equal(calculateXContentPoints(0, 199), 101, "impressions use floor(impressions / 100)");
+assert.equal(calculateXContentPoints(100, 100_000), 1300);
+assert.equal(calculateXContentPoints(-10, 0), 100, "quality is clamped at zero");
+assert.equal(calculateXContentPoints(120, 0), 300, "quality is clamped at 100");
 database.prepare(`INSERT INTO ambassador_x_content_candidates (x_post_id, author_id, discovery_source, status, discovered_at, created_at, updated_at) VALUES ('10017', 'user-1', 'filtered_stream', 'processing', ?, ?, ?)`)
   .run(new Date(now.getTime() - 60 * 60 * 1000).toISOString(), new Date(now.getTime() - 60 * 60 * 1000).toISOString(), new Date(now.getTime() - 60 * 60 * 1000).toISOString());
 posts.set("10017", post("10017", { text: "Dust Engine made wallet dust cleanup clearer after a stream worker restart." }));
@@ -141,6 +146,20 @@ posts.set("10005", post("10005", { text: "This is exactly what I needed for my B
 assert.equal((await processor.processPostId("10005", "filtered_stream")).status, "approved", "meaningful quote commentary can qualify");
 posts.set("10016", post("10016", { text: "https://x.com/DustEngine/status/1", referencedText: "Dust Engine makes wallet dust cleanup easier.", isQuote: true }));
 assert.equal((await processor.processPostId("10016", "filtered_stream")).reason, "quote_without_meaningful_commentary", "empty quote commentary is rejected");
+for (const [id, text] of [["10029", "ok"], ["10030", "nice"], ["10031", "nice work"]] as const) {
+  posts.set(id, post(id, { text, referencedText: "Dust Engine makes wallet dust cleanup easier.", isQuote: true }));
+  const result = await processor.processPostId(id, "filtered_stream");
+  assert.deepEqual(result, { status: "rejected", reason: "quote_without_meaningful_commentary" }, `trivial quote commentary '${text}' is rejected`);
+  assert.equal(database.prepare(`SELECT 1 FROM ambassador_activity_events WHERE x_post_id = ?`).get(id), undefined);
+}
+posts.set("10032", post("10032", { text: "@DustEngine saved me time.", referencedText: "Dust Engine makes wallet dust cleanup easier.", isQuote: true }));
+assert.equal((await processor.processPostId("10032", "filtered_stream")).status, "approved", "short informative quote commentary qualifies");
+for (const [id, text] of [["10027", "@DustEngine"], ["10028", "@dustengineapp"]] as const) {
+  posts.set(id, post(id, { text }));
+  const result = await processor.processPostId(id, "filtered_stream");
+  assert.deepEqual(result, { status: "rejected", reason: "empty_dust_engine_mention" }, "a pure Dust Engine tag is rejected without points");
+  assert.equal(database.prepare(`SELECT 1 FROM ambassador_activity_events WHERE x_post_id = ?`).get(id), undefined);
+}
 posts.set("10006", post("10006", { text: "Dust Engine airdrop guaranteed profit!!!" }));
 assert.equal((await processor.processPostId("10006", "filtered_stream")).reason, "obvious_spam");
 assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10006'`).get().status, "rejected", "deterministic spam remains a permanent content rejection");
@@ -150,14 +169,30 @@ assert.equal((await processor.processPostId("10007", "filtered_stream")).status,
 posts.set("10008", post("10008", { text: "Dust Engine helps people find wallet dust, makes Base cleanup simpler, and keeps the process straightforward." }));
 assert.equal((await processor.processPostId("10008", "filtered_stream")).reason, "near_duplicate_content", "copy-paste farming is rejected");
 
-evaluation = { ...highQuality, qualityScore: 39 };
-posts.set("10009", post("10009", { text: "Dust Engine is useful for my wallet cleanup experience." }));
-assert.equal((await processor.processPostId("10009", "filtered_stream")).reason, "below_quality_threshold");
-assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10009'`).get().status, "rejected", "low quality remains a permanent content rejection");
-evaluation = { ...highQuality, relevance: 10, eligible: false, qualityScore: 90 };
-posts.set("10010", post("10010", { text: "dustengine unrelated conversation" }));
-assert.equal((await processor.processPostId("10010", "filtered_stream")).reason, "quality_evaluation_ineligible", "the broad discovery term does not grant eligibility");
-assert.equal(database.prepare(`SELECT status FROM ambassador_x_content_candidates WHERE x_post_id = '10010'`).get().status, "rejected", "irrelevant evaluator decisions remain permanent content rejections");
+evaluation = { ...highQuality, eligible: false, relevance: 10, qualityScore: 0 };
+posts.set("10009", post("10009", { text: "Dust Engine is useful for my wallet cleanup experience.", impressions: 0 }));
+const lowQualityResult = await processor.processPostId("10009", "filtered_stream");
+assert.equal(lowQualityResult.status, "approved", "genuine qualifying content is not rejected for low quality or evaluator relevance/eligibility fields");
+assert.equal(lowQualityResult.points, 100, "quality zero earns the base points");
+const lowQualityActivity = database.prepare(`SELECT status, review_status, x_quality_score FROM ambassador_x_content_candidates JOIN ambassador_activity_events USING (x_post_id) WHERE x_post_id = '10009'`).get() as { status: string; review_status: string; x_quality_score: number };
+assert.deepEqual(lowQualityActivity, { status: "approved", review_status: "approved", x_quality_score: 0 });
+evaluation = { ...highQuality, qualityScore: 60 };
+posts.set("10010", post("10010", { text: "Dust Engine helped me compare small Base balances after a weekend wallet cleanup.", impressions: 565 }));
+const formulaResult = await processor.processPostId("10010", "filtered_stream");
+assert.equal(formulaResult.points, 225, "processor applies quality × 2 and floor(impressions / 100)");
+assert.equal(calculateXContentPoints(60, 565), 225);
+assert.equal(database.prepare(`SELECT review_status FROM ambassador_activity_events WHERE x_post_id = '10010'`).get().review_status, "approved");
+evaluation = { ...highQuality, eligible: false, relevance: 10, qualityScore: 0 };
+posts.set("10033", post("10033", { text: "@DustEngine This made my Base cleanup easier and saved me time.", referencedText: "Dust Engine makes wallet dust cleanup easier.", isQuote: true, impressions: 0 }));
+const lowQualityQuoteResult = await processor.processPostId("10033", "filtered_stream");
+assert.equal(lowQualityQuoteResult.status, "approved", "meaningful quote commentary qualifies regardless of low quality");
+assert.equal(lowQualityQuoteResult.points, 100);
+assert.equal((database.prepare(`SELECT review_status, x_quality_score FROM ambassador_activity_events WHERE x_post_id = '10033'`).get() as { review_status: string; x_quality_score: number }).x_quality_score, 0);
+evaluation = highQuality;
+
+evaluation = { ...highQuality, spamLikelihood: 60 };
+posts.set("10026", post("10026", { text: "Dust Engine is a genuine topic but this post matches spam signals." }));
+assert.equal((await processor.processPostId("10026", "filtered_stream")).reason, "spam_likelihood", "the evaluator spam safeguard remains active");
 evaluation = highQuality;
 
 const malformedResponse = (() => {

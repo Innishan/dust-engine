@@ -13,7 +13,7 @@ import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
-import { DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, resetTemporaryLostXContentCandidates, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
+import { calculateXContentPoints, DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, resetTemporaryLostXContentCandidates, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
 import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/tokenDiscovery";
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
@@ -33,9 +33,6 @@ const AMBASSADOR_POINTS = {
   CLEAN_DUST_POINTS_PER_COIN: 1,
   BRIDGE_POINTS_PER_USD: 1,
   QUALIFIED_REFERRAL_POINTS: 500,
-  X_CONTENT_BASE_POINTS: 100,
-  X_QUALITY_POINTS_PER_SCORE: 5,
-  X_IMPRESSION_LOG_MULTIPLIER: 100,
 } as const;
 const X_PRODUCTION_CALLBACK = "https://dustengine.xyz/api/auth/x/callback";
 const AMBASSADOR_SESSION_COOKIE = "dust_engine_ambassador_session";
@@ -472,7 +469,7 @@ async function startServer() {
           const quality = Math.min(100, Math.max(0, Number(event.xQualityScore) || 0));
           const impressions = Math.max(0, Math.floor(Number(event.xImpressions) || 0));
           xContentPosts += 1;
-          xPoints += AMBASSADOR_POINTS.X_CONTENT_BASE_POINTS + (quality * AMBASSADOR_POINTS.X_QUALITY_POINTS_PER_SCORE) + Math.floor(Math.log10(impressions + 1) * AMBASSADOR_POINTS.X_IMPRESSION_LOG_MULTIPLIER);
+          xPoints += calculateXContentPoints(quality, impressions);
         }
       }
       const points = (coinsSwept * AMBASSADOR_POINTS.CLEAN_DUST_POINTS_PER_COIN) + (bridgeVolumeUsd * AMBASSADOR_POINTS.BRIDGE_POINTS_PER_USD) + (referrals * AMBASSADOR_POINTS.QUALIFIED_REFERRAL_POINTS) + xPoints;
@@ -765,10 +762,6 @@ async function startServer() {
     return res.status(result.status).json(result.payload);
   });
 
-  const configuredQualityThreshold = Number.parseInt(process.env.X_CONTENT_QUALITY_THRESHOLD || "40", 10);
-  const xContentQualityThreshold = Number.isInteger(configuredQualityThreshold) && configuredQualityThreshold >= 0 && configuredQualityThreshold <= 100
-    ? configuredQualityThreshold
-    : 40;
   const configuredRecoveryInterval = Number.parseInt(process.env.X_CONTENT_RECOVERY_INTERVAL_MS || String(DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS), 10);
   const xContentRecoveryIntervalMs = Number.isInteger(configuredRecoveryInterval) && configuredRecoveryInterval >= DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS
     ? configuredRecoveryInterval
@@ -781,7 +774,6 @@ async function startServer() {
     const processor = new XContentProcessor({
       db: statsDb,
       client,
-      qualityThreshold: xContentQualityThreshold,
       evaluate: ({ content, context }) => evaluateXContent({ content, context, apiKey: geminiApiKey, model: process.env.GEMINI_MODEL }),
       recordApprovedActivity: (activity) => persistAmbassadorActivity(activity),
     });

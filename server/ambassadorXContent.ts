@@ -241,7 +241,7 @@ export function recoverySearchStart(now: Date, previousRecoveryAt?: string): str
 export function calculateXContentPoints(qualityScore: number, impressions: number) {
   const quality = Math.min(100, Math.max(0, Math.round(qualityScore)));
   const impressionCount = Math.max(0, Math.floor(impressions));
-  return 100 + (quality * 5) + Math.floor(Math.log10(impressionCount + 1) * 100);
+  return 100 + (quality * 2) + Math.floor(impressionCount / 100);
 }
 
 function deterministicSpamReason(content: string) {
@@ -252,8 +252,32 @@ function deterministicSpamReason(content: string) {
   return null;
 }
 
+function isEmptyDustEngineMention(content: string) {
+  const commentary = content
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[@#]?dustengine(?:app)?\b/gi, " ")
+    .replace(/#?dust\s+engine\b/gi, " ")
+    .replace(/dustengine\.xyz\b/gi, " ")
+    .replace(/[\s\p{P}\p{S}]/gu, "");
+  return commentary.length === 0;
+}
+
+const NON_SUBSTANTIVE_QUOTE_WORDS = new Set([
+  "ok", "okay", "nice", "wow", "gm", "cool", "yes", "yeah", "yep", "yup", "no", "nope",
+  "thanks", "thank", "you", "thx", "ty", "lol", "lmao", "rofl", "awesome", "great", "amazing",
+  "fire", "lit", "good", "well", "looks", "sounds", "agree", "agreed", "true", "indeed", "love",
+  "it", "this", "that", "so", "very", "much", "appreciate", "appreciated", "work", "job", "stuff",
+  "one", "bro", "man", "mate", "same", "100",
+]);
+
 function isMeaningfulQuoteCommentary(content: string) {
-  return /[a-z0-9]/i.test(content.replace(/https?:\/\/\S+/g, ""));
+  const commentary = content
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[@#]?dustengine(?:app)?\b/gi, " ")
+    .replace(/#?dust\s+engine\b/gi, " ")
+    .replace(/dustengine\.xyz\b/gi, " ");
+  const words = commentary.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  return words.some((word) => !NON_SUBSTANTIVE_QUOTE_WORDS.has(word));
 }
 
 export class XContentProcessor {
@@ -262,7 +286,6 @@ export class XContentProcessor {
     client: Pick<XContentClient, "getPost">;
     evaluate: (input: { content: string; context?: string }) => Promise<XContentEvaluation>;
     recordApprovedActivity: (activity: { id: string; ambassadorId: string; kind: "x_content"; xPostContent: string; xPostUrl: string; xPostId: string; xUserId: string; xImpressions: number; xQualityScore: number; reviewStatus: "approved"; completedAt?: string }) => { status: number; payload: Record<string, unknown> };
-    qualityThreshold: number;
     now?: () => Date;
   }) {}
 
@@ -365,6 +388,7 @@ export class XContentProcessor {
     if (post.isRepost) return this.reject(post.id, "repost_without_original_commentary");
     if (post.isQuote && !isMeaningfulQuoteCommentary(post.text)) return this.reject(post.id, "quote_without_meaningful_commentary");
     if (!hasDiscoverySignal(`${post.text}\n${post.referencedText || ""}`)) return this.reject(post.id, "missing_dust_engine_signal");
+    if (isEmptyDustEngineMention(post.text)) return this.reject(post.id, "empty_dust_engine_mention");
     const spamReason = deterministicSpamReason(post.text);
     if (spamReason) return this.reject(post.id, spamReason);
     const exact = this.options.db.prepare(`SELECT x_post_id FROM ambassador_x_content_candidates WHERE x_post_id != ? AND content_fingerprint = ? AND status = 'approved' LIMIT 1`).get(post.id, contentFingerprint);
@@ -379,8 +403,7 @@ export class XContentProcessor {
       return this.defer(post.id, error instanceof RetryableQualityError ? error : new RetryableQualityError("quality_evaluation_failed"));
     }
     const qualityScore = Math.min(100, Math.max(0, Math.round(evaluation.qualityScore)));
-    if (!evaluation.eligible || evaluation.relevance < 40 || evaluation.spamLikelihood >= 60) return this.reject(post.id, "quality_evaluation_ineligible", evaluation);
-    if (qualityScore < this.options.qualityThreshold) return this.reject(post.id, "below_quality_threshold", evaluation);
+    if (evaluation.spamLikelihood >= 60) return this.reject(post.id, "spam_likelihood", evaluation);
     const impressions = Math.max(0, Math.floor(Number(post.impressions) || 0));
     const points = calculateXContentPoints(qualityScore, impressions);
     const persisted = this.options.recordApprovedActivity({
