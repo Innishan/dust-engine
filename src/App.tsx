@@ -380,7 +380,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
                       </span>
                     </div>
                   )}
-                  <ConnectButton />
+                  <ConnectButton isFarcasterMiniApp={isFarcasterMiniApp} />
                 </div>
               </div>
             </header>
@@ -484,14 +484,23 @@ function ReferralAttribution() {
   return null;
 }
 
-function ConnectButton() {
+function ConnectButton({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+  const { connect, connectors } = useConnect();
+
   return (
     <div className="shrink-0">
       <ConnectKitButton.Custom>
         {({ isConnected, show, truncatedAddress }) => (
           <button
             type="button"
-            onClick={show}
+            onClick={() => {
+              if (isFarcasterMiniApp && !isConnected) {
+                const farcasterConnector = connectors.find((connector) => connector.id === "farcaster");
+                if (farcasterConnector) connect({ connector: farcasterConnector });
+                return;
+              }
+              show();
+            }}
             className="flex h-11 max-w-[150px] items-center gap-2 rounded-xl bg-zinc-800 px-3 text-sm font-semibold text-zinc-100 transition-colors hover:bg-zinc-700 sm:max-w-none sm:px-4"
           >
             {isConnected ? (
