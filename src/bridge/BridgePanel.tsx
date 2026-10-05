@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useAccount, useConnection } from "wagmi";
+import { useAccount } from "wagmi";
 import { useModal } from "connectkit";
 import axios from "axios";
 import { formatUnits, isAddress, isHash, parseUnits, zeroAddress, type Address } from "viem";
@@ -421,8 +421,7 @@ function isUserRejection(error: unknown) {
 }
 
 export function BridgePanel({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
-  const { address, isConnected, status, chainId } = useAccount();
-  const { connector } = useConnection();
+  const { address, isConnected, status, chainId, connector } = useAccount();
   const diagnostic = (event: string, error?: unknown, operation = "bridge") => logWalletDiagnostic(event, {
     status, address, chainId, connectorId: connector?.id, connectorName: connector?.name,
     activeSection: "bridge", environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
