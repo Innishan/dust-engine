@@ -24,7 +24,7 @@ import {
   useModal,
 } from "connectkit";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode, type MutableRefObject } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Settings,
@@ -79,6 +79,162 @@ import {
   type PriceQuote,
 } from "./tokenPricing";
 import { evaluateCleanDustEligibility } from "./tokenEligibility";
+import { getWalletErrorDetails, logWalletDiagnostic, type WalletDiagnosticState } from "./walletDiagnostics";
+
+const farcasterDiagnosticProviders = new WeakMap<object, object>();
+const walletConfigIds = new WeakMap<object, string>();
+let nextWalletConfigId = 1;
+function walletConfigIdentity(config: object) {
+  let identity = walletConfigIds.get(config);
+  if (!identity) {
+    identity = `wagmi-config-${nextWalletConfigId++}`;
+    walletConfigIds.set(config, identity);
+  }
+  return identity;
+}
+
+function logFarcasterRpcDiagnostic(level: "debug" | "error", details: unknown) {
+  try {
+    console[level]("[DustEngine][Farcaster RPC]", typeof details === "function" ? details() : details);
+  } catch {
+    // Diagnostic logging must never affect provider results or errors.
+  }
+}
+
+function sanitizeRpcErrorValue(value: unknown, key = "", depth = 0): unknown {
+  if (/calldata|\binput\b|signature|private.?key|seed|mnemonic|credential|authorization/i.test(key)) {
+    return "[redacted]";
+  }
+  if (typeof value === "string") {
+    if (/^0x[\da-f]{66,}$/i.test(value)) return "[redacted hex payload]";
+    return value.slice(0, 500);
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 3) return "[nested value omitted]";
+  if (Array.isArray(value)) {
+    return value.slice(0, 8).map((item) => sanitizeRpcErrorValue(item, key, depth + 1));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 20);
+    return Object.fromEntries(entries.map(([childKey, childValue]) => [
+      childKey,
+      sanitizeRpcErrorValue(childValue, childKey, depth + 1),
+    ]));
+  }
+  return String(value);
+}
+
+function getRpcErrorDiagnostics(error: unknown) {
+  const readFields = (value: unknown) => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return {};
+    const record = value as Record<string, unknown>;
+    return {
+      ...(record.code !== undefined ? { code: sanitizeRpcErrorValue(record.code) } : {}),
+      ...(record.message !== undefined ? { message: sanitizeRpcErrorValue(record.message) } : {}),
+      ...(record.details !== undefined ? { details: sanitizeRpcErrorValue(record.details) } : {}),
+      ...(record.data !== undefined ? { data: sanitizeRpcErrorValue(record.data, "errorData") } : {}),
+    };
+  };
+  const topLevel = readFields(error);
+  const cause = error && (typeof error === "object" || typeof error === "function")
+    ? (error as { cause?: unknown }).cause
+    : undefined;
+  return {
+    ...topLevel,
+    ...(cause !== undefined ? { cause: readFields(cause) } : {}),
+  };
+}
+
+function getExplicitRpcChainContext(
+  method: string,
+  params: unknown,
+): Record<string, string | number | Array<string | number>> {
+  const context: Record<string, string | number | Array<string | number>> = {};
+  if (!Array.isArray(params)) return context;
+  if (method === "wallet_getCapabilities" && Array.isArray(params[1])) {
+    const chainIds = params[1].filter((value): value is string | number =>
+      typeof value === "string" || typeof value === "number",
+    );
+    if (chainIds.length) context.chainIds = chainIds;
+  }
+  for (const param of params) {
+    if (!param || typeof param !== "object") continue;
+    const record = param as Record<string, unknown>;
+    const chainId = record.chainId ?? record.chain_id;
+    if (typeof chainId === "string" || typeof chainId === "number") context.chainId = chainId;
+    const chainIds = record.chainIds ?? record.chain_ids;
+    if (Array.isArray(chainIds)) {
+      const safeChainIds = chainIds.filter((value): value is string | number =>
+        typeof value === "string" || typeof value === "number",
+      );
+      if (safeChainIds.length) context.chainIds = safeChainIds;
+    }
+  }
+  return context;
+}
+
+function withFarcasterRpcDiagnostics(provider: unknown) {
+  if (!import.meta.env.DEV || !provider || typeof provider !== "object") return provider;
+  const cachedProvider = farcasterDiagnosticProviders.get(provider);
+  if (cachedProvider) return cachedProvider;
+
+  const diagnosticProvider = new Proxy(provider, {
+    get(target, property, receiver) {
+      const original = Reflect.get(target, property, receiver);
+      if (property !== "request" || typeof original !== "function") return original;
+
+      return async (args: { method: string; params?: unknown }) => {
+        const method = typeof args?.method === "string" ? args.method : "<unknown>";
+        const context = {
+          method,
+          ...getExplicitRpcChainContext(method, args?.params),
+          transactionSubmission: /^(eth_sendTransaction|wallet_sendTransaction|wallet_sendCalls|wallet_sendCallsAsync|eth_sendRawTransaction)$/i.test(method),
+          chainSwitch: /^(wallet_switchEthereumChain|wallet_addEthereumChain)$/i.test(method),
+          gasEstimation: /estimateGas/i.test(method),
+        };
+
+        try {
+          const result = await Reflect.apply(original, target, [args]);
+          const isTransactionSubmission = context.transactionSubmission;
+          const returnsTransactionHash = /^(eth_sendTransaction|wallet_sendTransaction|eth_sendRawTransaction)$/i.test(method);
+          const transactionHash = returnsTransactionHash && typeof result === "string" && /^0x[\da-f]{64}$/i.test(result)
+            ? result
+            : undefined;
+          logFarcasterRpcDiagnostic("debug", {
+            ...context,
+            success: true,
+            ...(returnsTransactionHash ? {
+              transactionHashReturned: transactionHash !== undefined,
+              ...(transactionHash ? { transactionHash } : {}),
+            } : {}),
+          });
+          return result;
+        } catch (error) {
+          logFarcasterRpcDiagnostic("error", () => ({
+            ...context,
+            success: false,
+            error: getRpcErrorDiagnostics(error),
+          }));
+          throw error;
+        }
+      };
+    },
+  }) as object;
+
+  farcasterDiagnosticProviders.set(provider, diagnosticProvider);
+  return diagnosticProvider;
+}
+
+function farcasterMiniAppWithDiagnostics() {
+  const createFarcasterConnector = farcasterMiniApp();
+  return (config: Parameters<typeof createFarcasterConnector>[0]) => {
+    const connector = createFarcasterConnector(config);
+    const getProvider = connector.getProvider.bind(connector);
+    connector.getProvider = async (...args) =>
+      withFarcasterRpcDiagnostics(await getProvider(...args)) as Awaited<ReturnType<typeof getProvider>>;
+    return connector;
+  };
+}
 
 sdk.actions.ready();
 
@@ -317,7 +473,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
       ssr: false,
       connectors: [
         ...(isFarcasterMiniApp
-          ? [farcasterMiniApp()]
+          ? [farcasterMiniAppWithDiagnostics()]
           : [
               injected(),
               coinbaseWallet({ appName: "Dust Cleaning Engine" }),
@@ -329,10 +485,15 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
   const [activeSection, setActiveSection] = useState<ProductSection>(() =>
     new URLSearchParams(window.location.search).get("section") === "ambassador" ? "ambassador" : "clean",
   );
+  const diagnosticStateRef = useRef<WalletDiagnosticState>({
+    status: "disconnected", activeSection, environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const selectSection = (section: ProductSection) => {
+    logWalletDiagnostic("SECTION_BEFORE", { ...diagnosticStateRef.current, activeSection });
     setActiveSection(section);
+    logWalletDiagnostic("SECTION_AFTER", { ...diagnosticStateRef.current, activeSection: section });
     setMobileMenuOpen(false);
   };
 
@@ -340,7 +501,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
     <WagmiProvider config={config} reconnectOnMount={false}>
       <QueryClientProvider client={queryClient}>
         <ConnectKitProvider>
-          <WalletDiagnostics isFarcasterMiniApp={isFarcasterMiniApp} />
+          <WalletDiagnostics isFarcasterMiniApp={isFarcasterMiniApp} activeSection={activeSection} config={config} diagnosticStateRef={diagnosticStateRef} />
           <div className="min-h-screen overflow-x-hidden bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/30">
             <header className="border-b border-zinc-800/50 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
               <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex items-center justify-between gap-2">
@@ -380,7 +541,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
                       </span>
                     </div>
                   )}
-                  <ConnectButton isFarcasterMiniApp={isFarcasterMiniApp} />
+                  <ConnectButton isFarcasterMiniApp={isFarcasterMiniApp} activeSection={activeSection} />
                 </div>
               </div>
             </header>
@@ -398,7 +559,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
               />
               <div className="min-w-0 flex-1">
                 <div hidden={activeSection !== "clean"}>
-                  <EngineCore />
+                  <EngineCore isFarcasterMiniApp={isFarcasterMiniApp} />
                 </div>
                 {activeSection === "lend" && (
                   <ComingSoonPanel
@@ -414,7 +575,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
                     description="Liquidity tools are in development. This section will become available when the experience is ready."
                   />
                 )}
-                {activeSection === "bridge" && <BridgePanel />}
+                {activeSection === "bridge" && <BridgePanel isFarcasterMiniApp={isFarcasterMiniApp} />}
                 {activeSection === "achievements" && <AchievementsSection />}
                 {activeSection === "ambassador" && <AmbassadorPanel />}
               </div>
@@ -427,19 +588,49 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
   );
 }
 
-function WalletDiagnostics({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
-  const { address, chainId, connector } = useAccount();
+function WalletDiagnostics({ isFarcasterMiniApp, activeSection, config, diagnosticStateRef }: {
+  isFarcasterMiniApp: boolean;
+  activeSection: ProductSection;
+  config: ReturnType<typeof createConfig>;
+  diagnosticStateRef: MutableRefObject<WalletDiagnosticState>;
+}) {
+  const { address, chainId, connector, status } = useAccount();
+
+  const snapshot: WalletDiagnosticState = {
+    status, address, chainId, connectorId: connector?.id, connectorName: connector?.name,
+    activeSection, environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+  };
+  diagnosticStateRef.current = snapshot;
+  const previousStateRef = useRef(snapshot);
 
   useEffect(() => {
-    if (!import.meta.env.DEV || !address || !connector) return;
-    console.info("[Dust Engine wallet] connected", {
-      connectorId: connector.id,
-      connectorName: connector.name,
-      chainId,
-      farcasterConnectorActive: connector.id === "farcaster",
-      runningInFarcasterMiniApp: isFarcasterMiniApp,
-    });
-  }, [address, chainId, connector, isFarcasterMiniApp]);
+    logWalletDiagnostic("WAGMI_RUNTIME_MOUNT", snapshot, { configIdentity: walletConfigIdentity(config) });
+    return () => logWalletDiagnostic("WAGMI_RUNTIME_UNMOUNT", snapshot, { configIdentity: walletConfigIdentity(config) });
+  }, []);
+
+  useEffect(() => {
+    logWalletDiagnostic("WAGMI_CONFIG_IDENTITY", snapshot, { configIdentity: walletConfigIdentity(config) });
+  }, [config]);
+
+  useEffect(() => {
+    if (activeSection === "clean") logWalletDiagnostic("CLEAN_DUST_ACTIVE", snapshot);
+    if (activeSection === "bridge") logWalletDiagnostic("BRIDGE_ACTIVE", snapshot);
+  }, [activeSection]);
+
+  useEffect(() => {
+    const previous = previousStateRef.current;
+    if (isFarcasterMiniApp && previous.status !== status) {
+      if (status === "disconnected") logWalletDiagnostic("CONNECTOR_EVENT", snapshot, { event: "disconnect" });
+      if (status === "connected") logWalletDiagnostic("CONNECT_SUCCESS", snapshot);
+    }
+    if (isFarcasterMiniApp && previous.address !== address) {
+      logWalletDiagnostic("CONNECTOR_EVENT", snapshot, { event: "accountsChanged", previousAddress: previous.address });
+    }
+    if (isFarcasterMiniApp && previous.chainId !== chainId) {
+      logWalletDiagnostic("CONNECTOR_EVENT", snapshot, { event: "chainChanged", previousChainId: previous.chainId });
+    }
+    previousStateRef.current = snapshot;
+  }, [status, address, chainId, isFarcasterMiniApp]);
 
   return null;
 }
@@ -484,8 +675,9 @@ function ReferralAttribution() {
   return null;
 }
 
-function ConnectButton({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+function ConnectButton({ isFarcasterMiniApp, activeSection }: { isFarcasterMiniApp: boolean; activeSection: ProductSection }) {
   const { connect, connectors } = useConnect();
+  const account = useAccount();
 
   return (
     <div className="shrink-0">
@@ -495,6 +687,11 @@ function ConnectButton({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
             type="button"
             onClick={() => {
               if (isFarcasterMiniApp && !isConnected) {
+                logWalletDiagnostic("HEADER_FARCASTER_CONNECT", {
+                  status: account.status, address: account.address, chainId: account.chainId,
+                  connectorId: account.connector?.id, connectorName: account.connector?.name, activeSection,
+                  environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+                });
                 const farcasterConnector = connectors.find((connector) => connector.id === "farcaster");
                 if (farcasterConnector) connect({ connector: farcasterConnector });
                 return;
@@ -748,10 +945,10 @@ function AppFooter() {
   );
 }
 
-function EngineCore() {
+function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
   const { writeContractAsync } = useWriteContract();
   const { signTypedDataAsync } = useSignTypedData();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, status, chainId, connector } = useAccount();
   const { setOpen } = useModal();
   const publicClient = usePublicClient();
   const scanRunGuardRef = useRef(createScanRunGuard());
@@ -1382,7 +1579,10 @@ function EngineCore() {
                 <p className="text-sm text-zinc-500 mb-4 italic">
                   Connect your wallet to power the engine
                 </p>
-                <div className="flex justify-center max-w-full overflow-hidden">
+                <div className="flex justify-center max-w-full overflow-hidden" onClickCapture={() => !isConnected && logWalletDiagnostic("CLEAN_DUST_CONNECTKIT_PROMPT", {
+                  status, address, chainId, connectorId: connector?.id, connectorName: connector?.name,
+                  activeSection: "clean", environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+                })}>
                   <ConnectKitButton />
                 </div>
               </div>
@@ -1662,6 +1862,7 @@ function EngineCore() {
                 addLog={addLog}
                 isConnected={isConnected}
                 setOpen={setOpen}
+                isFarcasterMiniApp={isFarcasterMiniApp}
                 onSuccess={() => {
                   // This callback is now handled internally in SwapButton for better precision
                   // but we keep it for potential external triggers
@@ -1776,6 +1977,7 @@ function SwapButton({
   addLog,
   isConnected,
   setOpen,
+  isFarcasterMiniApp,
 }: {
   tokens: TokenInfo[];
   setTokens: (val: TokenInfo[] | ((prev: TokenInfo[]) => TokenInfo[])) => void;
@@ -1783,6 +1985,7 @@ function SwapButton({
   addLog: (msg: string) => void;
   isConnected: boolean;
   setOpen: (open: boolean) => void;
+  isFarcasterMiniApp: boolean;
 }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<
@@ -1790,7 +1993,7 @@ function SwapButton({
   >("idle");
   const [currentSource, setCurrentSource] = useState<string>("");
 
-  const { address, chain } = useAccount();
+  const { address, chain, status, connector } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
@@ -1801,6 +2004,10 @@ function SwapButton({
   const [successData, setSuccessData] = useState({ count: 0, value: 0 });
 
   const handleSwap = async (e?: any) => {
+    const diagnostic = (event: string, error?: unknown) => logWalletDiagnostic(event, {
+      status, address, chainId: chain?.id, connectorId: connector?.id, connectorName: connector?.name,
+      activeSection: "clean", environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+    }, error === undefined ? { operation: "clean_dust_swap" } : { operation: "clean_dust_swap", ...getWalletErrorDetails(error) });
     console.log("🔥 NEW CODE LOADED");
 
     console.log("🟢 BUTTON CLICKED");
@@ -1825,10 +2032,12 @@ function SwapButton({
       e.stopPropagation();
     }
     if (!isConnected) {
+      diagnostic("CLEAN_DUST_CONNECTKIT_PROMPT");
       setOpen(true);
       return;
     }
     if (tokens.length === 0 || !address) return;
+    diagnostic("CLEAN_DUST_OPERATION");
 
     // Ensure correct chain
     if (chain?.id !== base.id) {
@@ -1836,6 +2045,7 @@ function SwapButton({
         addLog("SWITCHING TO BASE NETWORK...");
         await switchChainAsync({ chainId: base.id });
       } catch (err) {
+        diagnostic("OPERATION_ERROR", err);
         addLog("FAILED TO SWITCH NETWORK. PLEASE SWITCH TO BASE MANUALLY.");
         return;
       }
@@ -2518,6 +2728,7 @@ function SwapButton({
             }
 
           } catch (err: any) {
+            diagnostic("OPERATION_ERROR", err);
             console.error("❌ WRITE ERROR FULL:", err);
             console.error("SHORT MESSAGE:", err?.shortMessage);
             console.error("CAUSE:", err?.cause);
@@ -2525,6 +2736,7 @@ function SwapButton({
             console.error("RAW ERR:", JSON.stringify(err, null, 2));
           }
         } catch (err) {
+          diagnostic("OPERATION_ERROR", err);
           console.error("❌ Contract failed:", err);
 
           if (err?.name === "UserRejectedRequestError") {
@@ -2577,6 +2789,7 @@ function SwapButton({
         );
       }
     } catch (err: any) {
+      diagnostic("OPERATION_ERROR", err);
       console.error(err);
       const errorDetail =
         err.response?.data?.description ||

@@ -35,6 +35,7 @@ import {
   getSupportedEvmChains,
   getSupportedTokens,
 } from "./lifi";
+import { getWalletErrorDetails, logWalletDiagnostic } from "../walletDiagnostics";
 
 type TokenSelectorProps = {
   address?: Address;
@@ -419,9 +420,13 @@ function isUserRejection(error: unknown) {
   );
 }
 
-export function BridgePanel() {
-  const { address, isConnected } = useAccount();
+export function BridgePanel({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+  const { address, isConnected, status, chainId } = useAccount();
   const { connector } = useConnection();
+  const diagnostic = (event: string, error?: unknown, operation = "bridge") => logWalletDiagnostic(event, {
+    status, address, chainId, connectorId: connector?.id, connectorName: connector?.name,
+    activeSection: "bridge", environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+  }, { operation, ...(error === undefined ? {} : getWalletErrorDetails(error)) });
   const { setOpen } = useModal();
   const [chains, setChains] = useState<ExtendedChain[]>([]);
   const [fromChainId, setFromChainId] = useState<number>();
@@ -575,6 +580,7 @@ export function BridgePanel() {
 
   const requestRoute = async () => {
     if (!isConnected || !address) {
+      diagnostic("BRIDGE_CONNECTKIT_PROMPT", undefined, "bridge_connect_prompt");
       setOpen(true);
       return;
     }
@@ -605,6 +611,7 @@ export function BridgePanel() {
     setRoute(undefined);
     setExecutionRoute(undefined);
     setExecutionMessage("Preparing route");
+    diagnostic("BRIDGE_OPERATION", undefined, "bridge_request_route");
 
     try {
       const parsedAmount = parseUnits(normalizedAmount, fromToken.decimals);
@@ -645,6 +652,7 @@ export function BridgePanel() {
       setRoute(bestRoute);
       setExecutionMessage("Route ready");
     } catch (err) {
+      diagnostic("OPERATION_ERROR", err, "bridge_request_route");
       setExecutionMessage("");
       setError(err instanceof Error ? err.message : "Unable to request a LI.FI route.");
     } finally {
@@ -671,6 +679,7 @@ export function BridgePanel() {
     setIsExecuting(true);
     setError("");
     setExecutionMessage(resume ? "Resuming route" : "Preparing route");
+    diagnostic("BRIDGE_OPERATION", undefined, resume ? "bridge_resume" : "bridge_execute");
 
     try {
       const executionOptions = {
@@ -706,6 +715,7 @@ export function BridgePanel() {
       }
       setExecutionMessage(isComplete ? "Completed" : "Route paused — resume when ready");
     } catch (err) {
+      diagnostic("OPERATION_ERROR", err, resume ? "bridge_resume" : "bridge_execute");
       setExecutionMessage(isUserRejection(err) ? "User rejected" : "Failed");
       setError(err instanceof Error ? err.message : "LI.FI route execution failed.");
     } finally {
@@ -830,7 +840,7 @@ export function BridgePanel() {
         </div>
 
         {!isConnected ? (
-          <button type="button" onClick={() => setOpen(true)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-black uppercase tracking-wide text-zinc-950 transition-colors hover:bg-emerald-400">
+          <button type="button" onClick={() => { diagnostic("BRIDGE_CONNECTKIT_PROMPT", undefined, "bridge_connect_prompt"); setOpen(true); }} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-black uppercase tracking-wide text-zinc-950 transition-colors hover:bg-emerald-400">
             <Wallet size={17} /> Connect wallet to bridge
           </button>
         ) : (
