@@ -498,7 +498,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
   };
 
   return (
-    <WagmiProvider config={config} reconnectOnMount={false}>
+    <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <ConnectKitProvider>
           <WalletDiagnostics isFarcasterMiniApp={isFarcasterMiniApp} activeSection={activeSection} config={config} diagnosticStateRef={diagnosticStateRef} />
