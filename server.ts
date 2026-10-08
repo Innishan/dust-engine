@@ -12,6 +12,7 @@ import { base } from "viem/chains";
 import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
 import { getAchievementState, initializeAchievementTables } from "./server/achievementPersistence";
+import { getTotalEarlySupporterBonus, initializeEarlySupporterAwardTable } from "./server/earlySupporterBonus";
 import { BRIDGE_INTEGRATOR } from "./src/bridge/lifi.js";
 import { calculateXContentPoints, DEFAULT_X_CONTENT_RECOVERY_INTERVAL_MS, requeueCandidatesForVerifiedAuthor, XApiClient, XContentProcessor, XContentWorker, initializeXContentTables } from "./server/ambassadorXContent";
 import { evaluateXContent } from "./server/ambassadorXQuality";
@@ -236,6 +237,7 @@ async function startServer() {
       FOREIGN KEY (ambassador_id) REFERENCES ambassadors(id)
     );
   `);
+  initializeEarlySupporterAwardTable(statsDb);
 
   // Existing databases may predate the identity/X and scoring columns. These
   // migrations are additive only; no Ambassador data is deleted or recreated.
@@ -470,7 +472,9 @@ async function startServer() {
           xPoints += calculateXContentPoints(quality, impressions);
         }
       }
-      const points = (coinsSwept * AMBASSADOR_POINTS.CLEAN_DUST_POINTS_PER_COIN) + (bridgeVolumeUsd * AMBASSADOR_POINTS.BRIDGE_POINTS_PER_USD) + (referrals * AMBASSADOR_POINTS.QUALIFIED_REFERRAL_POINTS) + xPoints;
+      const existingVerifiedPoints = (coinsSwept * AMBASSADOR_POINTS.CLEAN_DUST_POINTS_PER_COIN) + (bridgeVolumeUsd * AMBASSADOR_POINTS.BRIDGE_POINTS_PER_USD) + (referrals * AMBASSADOR_POINTS.QUALIFIED_REFERRAL_POINTS) + xPoints;
+      const earlySupporterBonus = getTotalEarlySupporterBonus(statsDb, ambassador.walletAddress);
+      const points = Math.round(existingVerifiedPoints + earlySupporterBonus);
       const firstVerifiedActivityAt = activity.map((event) => event.completedAt).sort()[0] || ambassador.createdAt;
       // Clean Dust is verified as a token count only. Never estimate its USD value
       // from client analytics; verified USD volume currently consists of Bridge only.
@@ -482,7 +486,8 @@ async function startServer() {
         // `x_user_id` is written only by the completed X OAuth callback. Do not
         // expose a legacy/manual handle as a verified leaderboard identity.
         ...(ambassador.xUserId && ambassador.xUsername ? { xUsername: ambassador.xUsername } : {}),
-        points: Math.round(points),
+        points,
+        earlySupporterBonus,
         referrals,
         coinsSwept,
         bridgeVolumeUsd,
@@ -555,7 +560,7 @@ async function startServer() {
     const ambassador = getSessionAmbassador(req);
     if (!ambassador) return res.status(401).json({ error: "Ambassador session required" });
     const entry = getLeaderboardEntries().find((item) => item.ambassadorId === ambassador.id);
-    res.json({ profile: { ...ambassador, xVerified: Boolean(ambassador.xUserId), ...(entry || { points: 0, referrals: 0, coinsSwept: 0, bridgeVolumeUsd: 0, volumeUsd: 0, xContentPosts: 0 }) } });
+    res.json({ profile: { ...ambassador, xVerified: Boolean(ambassador.xUserId), ...(entry || { points: 0, earlySupporterBonus: 0, referrals: 0, coinsSwept: 0, bridgeVolumeUsd: 0, volumeUsd: 0, xContentPosts: 0 }) } });
   });
 
   app.get("/api/auth/x/start", (req, res) => {
