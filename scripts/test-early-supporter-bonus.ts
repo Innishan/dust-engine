@@ -8,7 +8,9 @@ import net from "node:net";
 import Database from "better-sqlite3";
 import {
   EARLY_SUPPORTER_CAMPAIGN,
+  applyEarlySupporterAwardSnapshot,
   calculateEarlySupporterBonuses,
+  type EarlySupporterAwardSnapshot,
   getDeterministicRandomScore,
   getTotalEarlySupporterBonus,
   initializeEarlySupporterAwardTable,
@@ -95,6 +97,70 @@ function assertBonusHelperBehavior() {
   assert.equal(calculateEarlySupporterBonuses([withBridgeVolume], campaignWindow)[0].bonusPoints, zeroActivityBonus.bonusPoints, "bridge volume does not affect the bonus");
   const withExistingPoints = Object.assign(makeParticipant(wallet, zeroActivity.createdAt), { existingVerifiedPoints: 987654 });
   assert.equal(calculateEarlySupporterBonuses([withExistingPoints], campaignWindow)[0].bonusPoints, zeroActivityBonus.bonusPoints, "existing verified points do not affect the bonus");
+}
+
+function makeReviewedSnapshot(): EarlySupporterAwardSnapshot {
+  const points = [148, 148, ...Array.from({ length: 20 }, () => 493), 497];
+  const createdAt = "2026-09-01T00:00:00.000Z";
+  return {
+    campaignId: "early_supporter_v1",
+    campaignWindow: { startAt: "2026-09-01T00:00:00.000Z", endAt: "2026-10-06T23:59:59.999Z" },
+    approvedAmbassadorCount: 23,
+    totalBonusPoints: 10_653,
+    awards: points.map((bonusPoints, index) => ({
+      walletAddress: `0x${(index + 1).toString(16).padStart(40, "0")}`,
+      createdAt,
+      bonusPoints,
+    })),
+  };
+}
+
+function createSnapshotDatabase(snapshot: EarlySupporterAwardSnapshot) {
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE ambassadors (wallet_address TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL)");
+  const insertAmbassador = db.prepare("INSERT INTO ambassadors (wallet_address, created_at, status) VALUES (?, ?, 'approved')");
+  for (const award of snapshot.awards) insertAmbassador.run(award.walletAddress, award.createdAt);
+  return db;
+}
+
+function assertAwardSnapshotBehavior() {
+  const snapshot = makeReviewedSnapshot();
+  assert.equal(snapshot.awards.length, 23);
+  assert.equal(snapshot.awards.filter((award) => award.bonusPoints === 148).length, 2);
+
+  const db = createSnapshotDatabase(snapshot);
+  try {
+    db.exec("CREATE TABLE ambassador_activity_events (kind TEXT, bridge_volume_usd REAL)");
+    db.prepare("INSERT INTO ambassador_activity_events (kind, bridge_volume_usd) VALUES ('bridge_completed', 25.5)").run();
+    const result = applyEarlySupporterAwardSnapshot(db, snapshot);
+    assert.deepEqual(result, { insertedCount: 23, awardCount: 23, totalBonusPoints: 10_653 });
+    assert.equal(applyEarlySupporterAwardSnapshot(db, snapshot).insertedCount, 0, "reapplying the reviewed snapshot is idempotent");
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM early_supporter_awards WHERE campaign_id = 'early_supporter_v1'").get() as { count: number }).count, 23);
+    assert.equal((db.prepare("SELECT SUM(bonus_points) AS total FROM early_supporter_awards WHERE campaign_id = 'early_supporter_v1'").get() as { total: number }).total, 10_653);
+    assert.equal((db.prepare("SELECT SUM(bridge_volume_usd) AS total FROM ambassador_activity_events").get() as { total: number }).total, 25.5, "award operation leaves activity and bridge volume untouched");
+  } finally {
+    db.close();
+  }
+
+  const conflictDb = createSnapshotDatabase(snapshot);
+  try {
+    initializeEarlySupporterAwardTable(conflictDb);
+    const first = snapshot.awards[0];
+    recordEarlySupporterAward(conflictDb, { campaignId: snapshot.campaignId, walletAddress: first.walletAddress, bonusPoints: first.bonusPoints === 1000 ? 999 : first.bonusPoints + 1, awardedAt: "2026-10-08T00:00:00.000Z" });
+    assert.throws(() => applyEarlySupporterAwardSnapshot(conflictDb, snapshot), /conflict/i);
+    assert.equal((conflictDb.prepare("SELECT COUNT(*) AS count FROM early_supporter_awards WHERE campaign_id = 'early_supporter_v1'").get() as { count: number }).count, 1, "allocation conflict aborts without partial writes");
+  } finally {
+    conflictDb.close();
+  }
+
+  const mismatchedDb = createSnapshotDatabase(snapshot);
+  try {
+    const changedSnapshot = { ...snapshot, awards: snapshot.awards.map((award, index) => index === 0 ? { ...award, createdAt: "2026-09-02T00:00:00.000Z" } : award) };
+    assert.throws(() => applyEarlySupporterAwardSnapshot(mismatchedDb, changedSnapshot), /differ from the reviewed snapshot/i);
+    assert.equal((mismatchedDb.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name='early_supporter_awards'").get() as { count: number }).count, 0, "population mismatch aborts before ledger creation");
+  } finally {
+    mismatchedDb.close();
+  }
 }
 
 async function getAvailablePort() {
@@ -226,5 +292,6 @@ async function assertLeaderboardAndProfileCompatibility() {
 }
 
 assertBonusHelperBehavior();
+assertAwardSnapshotBehavior();
 await assertLeaderboardAndProfileCompatibility();
 console.log("Early supporter bonus tests passed");

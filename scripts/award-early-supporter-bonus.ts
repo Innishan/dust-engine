@@ -1,5 +1,14 @@
 import Database from "better-sqlite3";
-import { calculateEarlySupporterBonuses, EARLY_SUPPORTER_CAMPAIGN_ID, type EarlySupporterParticipant } from "../server/earlySupporterBonus";
+import { readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  applyEarlySupporterAwardSnapshot,
+  calculateEarlySupporterBonuses,
+  EARLY_SUPPORTER_CAMPAIGN,
+  EARLY_SUPPORTER_CAMPAIGN_ID,
+  type EarlySupporterAwardSnapshot,
+  type EarlySupporterParticipant,
+} from "../server/earlySupporterBonus";
 
 type AmbassadorRow = { id: string; walletAddress: string; createdAt: string };
 type ActivityRow = {
@@ -36,9 +45,75 @@ function calculateExistingPoints(events: ActivityRow[]) {
   return (coinsSwept * 1) + (bridgeVolumeUsd * 1) + (referrals * 500) + xPoints;
 }
 
+function parseOptions(args: string[]) {
+  if (args.length === 0) return { mode: "report" as const, json: false };
+  if (args.length === 1 && args[0] === "--json") return { mode: "report" as const, json: true };
+  const options = new Map<string, string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (!["--award-snapshot", "--confirm-campaign", "--confirm-database-path"].includes(flag)) {
+      throw new Error(`Unsupported award option: ${flag}`);
+    }
+    const value = args[index + 1];
+    if (!value || value.startsWith("--") || options.has(flag)) throw new Error(`Expected one value for ${flag}`);
+    options.set(flag, value);
+    index += 1;
+  }
+  if (options.size !== 3) {
+    throw new Error("Awarding requires --award-snapshot, --confirm-campaign, and --confirm-database-path; default execution is dry-run only");
+  }
+  return {
+    mode: "award" as const,
+    snapshotPath: options.get("--award-snapshot")!,
+    campaignId: options.get("--confirm-campaign")!,
+    confirmedDatabasePath: options.get("--confirm-database-path")!,
+  };
+}
+
+function loadSnapshot(snapshotPath: string): EarlySupporterAwardSnapshot {
+  const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as EarlySupporterAwardSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.awards)) throw new Error("Award snapshot is not valid JSON for this campaign");
+  return snapshot;
+}
+
+function awardFromSnapshot(snapshotPath: string, campaignId: string, confirmedDatabasePath: string) {
+  if (campaignId !== EARLY_SUPPORTER_CAMPAIGN_ID) throw new Error(`Campaign confirmation must be ${EARLY_SUPPORTER_CAMPAIGN_ID}`);
+  if (!confirmedDatabasePath.trim()) throw new Error("A database path confirmation is required");
+  const configuredPath = resolveDatabasePath();
+  let configuredRealPath: string;
+  let confirmedRealPath: string;
+  try {
+    configuredRealPath = realpathSync(configuredPath);
+    confirmedRealPath = realpathSync(confirmedDatabasePath);
+  } catch {
+    throw new Error("The configured and confirmed database paths must both resolve to the existing target database");
+  }
+  if (configuredRealPath !== confirmedRealPath) throw new Error("DUST_ENGINE_DATABASE_PATH does not match --confirm-database-path");
+
+  const snapshot = loadSnapshot(snapshotPath);
+  const database = new Database(configuredRealPath, { fileMustExist: true });
+  try {
+    const result = applyEarlySupporterAwardSnapshot(database, snapshot);
+    console.log(JSON.stringify({
+      status: "awarded",
+      campaignId: EARLY_SUPPORTER_CAMPAIGN_ID,
+      approvedAmbassadorCount: result.awardCount,
+      awardsWritten: result.insertedCount,
+      totalBonusPoints: result.totalBonusPoints,
+      databasePath: configuredRealPath,
+    }));
+  } finally {
+    database.close();
+  }
+}
+
 function main() {
-  if (process.argv.length > 2) throw new Error("This report supports no command-line flags and is DRY-RUN ONLY.");
-  console.log(`DRY RUN ONLY — no database writes are being performed. Campaign: ${EARLY_SUPPORTER_CAMPAIGN_ID}`);
+  const options = parseOptions(process.argv.slice(2));
+  if (options.mode === "award") {
+    awardFromSnapshot(options.snapshotPath, options.campaignId, options.confirmedDatabasePath);
+    return;
+  }
+
   const database = new Database(resolveDatabasePath(), { readonly: true, fileMustExist: true });
   try {
     const ambassadors = database.prepare(`
@@ -77,14 +152,25 @@ function main() {
         projectedTotalPoints: Math.round(existingVerifiedPoints + bonus.bonusPoints),
       };
     });
-
+    const bonusValues = reportRows.map((row) => row.bonusPoints);
+    const totalBonus = bonusValues.reduce((sum, bonus) => sum + bonus, 0);
+    const averageBonus = bonusValues.length ? totalBonus / bonusValues.length : 0;
+    if (options.json) {
+      const snapshot: EarlySupporterAwardSnapshot = {
+        campaignId: EARLY_SUPPORTER_CAMPAIGN_ID,
+        campaignWindow: { startAt: EARLY_SUPPORTER_CAMPAIGN.startAt, endAt: EARLY_SUPPORTER_CAMPAIGN.endAt },
+        approvedAmbassadorCount: reportRows.length,
+        totalBonusPoints: totalBonus,
+        awards: reportRows.map(({ walletAddress, createdAt, bonusPoints }) => ({ walletAddress, createdAt, bonusPoints })),
+      };
+      console.log(JSON.stringify(snapshot, null, 2));
+      return;
+    }
+    console.log(`DRY RUN ONLY — no database writes are being performed. Campaign: ${EARLY_SUPPORTER_CAMPAIGN_ID}`);
     console.log("Wallet | Ambassador profile created_at | Earliness score | Deterministic random score | Combined score | Proposed bonus | Existing verified points | Projected total points");
     for (const row of reportRows) {
       console.log(`${row.walletAddress} | ${row.createdAt} | ${row.earlinessScore.toFixed(6)} | ${row.deterministicRandomScore.toFixed(6)} | ${row.combinedScore.toFixed(6)} | ${row.bonusPoints} | ${row.existingVerifiedPoints} | ${row.projectedTotalPoints}`);
     }
-    const bonusValues = reportRows.map((row) => row.bonusPoints);
-    const totalBonus = bonusValues.reduce((sum, bonus) => sum + bonus, 0);
-    const averageBonus = bonusValues.length ? totalBonus / bonusValues.length : 0;
     console.log(`TOTAL USERS: ${reportRows.length}`);
     console.log(`MIN BONUS: ${bonusValues.length ? Math.min(...bonusValues) : 0}`);
     console.log(`MAX BONUS: ${bonusValues.length ? Math.max(...bonusValues) : 0}`);
