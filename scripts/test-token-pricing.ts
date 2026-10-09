@@ -6,6 +6,7 @@ import {
   createInitialQuotes,
   dexScreenerChunks,
   fetchDexScreenerQuotes,
+  indicativePriceAddresses,
   marketEvidenceAddresses,
   qualifyingDexScreenerQuotes,
   unresolvedEligibleAddresses,
@@ -86,7 +87,19 @@ async function run() {
     { chainId: "base", baseToken: { address: other }, priceUsd: "1.5", liquidity: { usd: 20 } },
     { chainId: "base", baseToken: { address: other }, priceUsd: "2.5", liquidity: { usd: 30 } },
   ]);
-  assert.deepEqual(candidates[other], { priceUsd: 2.5, source: "dexscreener", verified: true });
+  assert.deepEqual(candidates[other], { priceUsd: 2.5, source: "dexscreener", verified: false });
+  const avnt = "0x696f9436b67233384889472cd7cd58a6fb5df4f1";
+  const avntCandidates = indicativePriceAddresses([
+    { address: avnt },
+    { address: weth },
+  ], weth);
+  assert.deepEqual(avntCandidates, [avnt]);
+  const avntIndicative = qualifyingDexScreenerQuotes(avntCandidates, [
+    { chainId: "base", baseToken: { address: avnt }, priceUsd: "0.1344", liquidity: { usd: 767042.32 } },
+  ]);
+  assert.equal(avntIndicative[avnt].priceUsd, 0.1344);
+  assert.equal(avntIndicative[avnt].verified, false, "DexScreener display quotes are never verified prices");
+  assert.equal(avntIndicative[avnt].source, "dexscreener");
   const requestedUrls: string[] = [];
   await fetchDexScreenerQuotes(many, async (url) => {
     requestedUrls.push(url);

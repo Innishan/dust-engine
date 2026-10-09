@@ -75,6 +75,20 @@ export function marketEvidenceAddresses(
   }))];
 }
 
+// Every token passed here has already been independently verified to have a
+// positive on-chain balance. These quotes are for display only; eligibility
+// still requires the separate Blockscout evidence evaluated by tokenEligibility.
+export function indicativePriceAddresses(
+  tokens: Array<{ address?: unknown }>,
+  wethAddress: string,
+): string[] {
+  const weth = wethAddress.toLowerCase();
+  return [...new Set(tokens.flatMap((token) => {
+    const address = normalizeTokenAddress(token.address);
+    return address && address !== weth ? [address] : [];
+  }))];
+}
+
 type DexPair = {
   chainId?: unknown;
   baseToken?: { address?: unknown };
@@ -96,7 +110,7 @@ export function qualifyingDexScreenerQuotes(requestedAddresses: string[], pairs:
     if (!existing || liquidityUsd > existing.liquidityUsd) selected.set(address, { priceUsd, liquidityUsd });
   }
   return Object.fromEntries([...selected].map(([address, quote]) => [address, {
-    priceUsd: quote.priceUsd, source: "dexscreener" as const, verified: true,
+    priceUsd: quote.priceUsd, source: "dexscreener" as const, verified: false,
   }]));
 }
 

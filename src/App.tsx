@@ -74,7 +74,7 @@ import { recordSuccessfulBalances, verifiedPositiveBalances } from "./scanBalanc
 import {
   createInitialQuotes,
   fetchDexScreenerQuotes,
-  marketEvidenceAddresses,
+  indicativePriceAddresses,
   type BlockscoutQuote,
   type PriceQuote,
 } from "./tokenPricing";
@@ -1340,9 +1340,9 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       console.time("⏱️ PRICE FETCH");
       addLog(`FETCHING PRICES FOR ${tokensWithMetadata.length} ASSETS...`);
       const quotes: Record<string, PriceQuote> = createInitialQuotes(LOCAL_KNOWN_PRICES, blockscoutQuotes);
-      const marketEvidence = marketEvidenceAddresses(tokensWithMetadata, blockscoutQuotes, WETH);
+      const priceCandidates = indicativePriceAddresses(tokensWithMetadata, WETH);
       const dexScreenerQuotes = await fetchDexScreenerQuotes(
-        marketEvidence,
+        priceCandidates,
         (url) => axios.get(url, { timeout: 8000 }),
       );
       console.timeEnd("⏱️ PRICE FETCH");
@@ -1360,7 +1360,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         // ❌ Ignore WETH from dust detection
         if (addrLower === WETH.toLowerCase()) continue;
 
-        const quote = quotes[addrLower];
+        const quote = quotes[addrLower] || dexScreenerQuotes[addrLower];
         const eligibility = evaluateCleanDustEligibility({
           address: t.address,
           canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
