@@ -16,9 +16,9 @@ Wallets commonly accumulate small, fragmented token balances. Individually, thes
 
 - Connects injected and Coinbase Wallet-compatible wallets with Wagmi and ConnectKit.
 - Operates on Base mainnet (`chainId` `8453`).
-- Discovers ERC-20 candidates from Base Blockscout token balances and recent token transfers.
+- Discovers ERC-20 candidates from Base Alchemy token balances and ERC-20 transfers, with Blockscout token balances and recent transfers as fallbacks.
 - Verifies discovered balances on-chain with batched `balanceOf` calls.
-- Retrieves USD prices from Blockscout data where available, then CoinGecko, with DexScreener as a fallback.
+- Uses Blockscout market metadata and active DexScreener Base pairs as transparent market evidence. DexScreener-only prices remain indicative; market evidence is not a token safety rating.
 - Lets users set a dust threshold, review results, select assets, and add a Base ERC-20 token manually.
 - Requests Base-to-Base routes to WETH through the LI.FI SDK.
 - Uses Permit2 batch-transfer typed-data signatures for the selected routed tokens.
@@ -29,7 +29,7 @@ Wallets commonly accumulate small, fragmented token balances. Individually, thes
 ## How it works
 
 1. Connect a wallet and scan the connected wallet, or enter an EVM address to inspect.
-2. The server and client query Base Blockscout for token-balance and transfer-history candidates.
+2. The server queries configured Alchemy discovery API, with Blockscout balance and transfer endpoints as optional providers.
 3. The client deduplicates the candidates and checks current ERC-20 balances on Base using multicall.
 4. Tokens with balances are priced, valued in USD, and marked eligible when they meet the current dust filter and have price/verification data.
 5. The user reviews and selects eligible assets. For every selected token, the client asks LI.FI for a Base-to-Base route to WETH with the DustEngine contract as the route recipient.
@@ -43,7 +43,7 @@ Wallets commonly accumulate small, fragmented token balances. Individually, thes
 | --- | --- |
 | React + Vite client | Wallet connection, token scanning workflow, on-chain reads, pricing, route requests, Permit2 signing, execution UI, and receipt handling. |
 | Express server (`server.ts`) | Serves the built client; provides health, scan, quote, analytics, webhook, and CORS proxy endpoints. |
-| Base services | Base RPC, Base Blockscout, LI.FI, CoinGecko, and DexScreener are used by the current implementation. |
+| Base services | Base RPC, Alchemy, Blockscout, LI.FI, and DexScreener are used by the current implementation. |
 | DustEngine contract | The existing deployed execution layer that receives the batch call at the configured address. It is intentionally out of scope for the current product-improvement phase. |
 
 ```text
@@ -62,7 +62,7 @@ Current development improves off-chain, frontend, and backend functionality arou
 
 ## Token discovery and dust detection
 
-Discovery starts with Base Blockscout token-balance data and recent ERC-20 transfers. The frontend supplements the server scan with a direct Blockscout balance query, deduplicates token addresses, and excludes the native-token sentinel address.
+Discovery combines configured Base Alchemy token-balance and ERC-20 transfer queries with Blockscout balances/transfers when reachable. Alchemy pagination is capped by page count, request deadline, and candidate count; partial results are retained and reported. Candidate addresses are deduplicated, and native-token sentinels are excluded. `ALCHEMY_API_KEY` is optional; Blockscout remains a public fallback.
 
 The client then verifies balances from the Base RPC using batched ERC-20 `balanceOf` calls. This on-chain verification is the source used to determine whether a discovered token currently has a nonzero balance.
 
@@ -74,12 +74,11 @@ Candidate balances returned by an indexer are not used as the final balance for 
 
 ## Token valuation and pricing
 
-The price sequence in the current client is:
+Prices use local fallback prices for configured common assets, Blockscout exchange rates when available, and DexScreener Base token pairs for indicative prices. DexScreener lookup batches are bounded; failures leave assets unpriced.
 
-1. Exchange-rate data supplied with discovered Blockscout tokens, when present.
-2. CoinGecko’s Base token-price endpoint, requested in batches with a single-token fallback.
-3. DexScreener for tokens still missing a price.
-4. Local fallback prices for the configured common Base assets: USDC, USDT, DAI, and WETH.
+For non-canonical Clean Dust eligibility, the policy requires (1) the exact Base chain (8453) and normalized token address, (2) a DexScreener pair and GeckoTerminal pool with the same pool address and token/quote identity, (3) Base RPC reads confirming that pool's `token0()` and `token1()` match that pair, (4) positive prices agreeing within 25%, and (5) at least $1,000 liquidity and 24-hour volume from each market source, with at least ten 24-hour trades and both buys and sells from each. Thresholds are inclusive. Market-evidence requests are processed in batches of up to 25 pool entries; [GeckoTerminal's public API](https://api.geckoterminal.com/docs/index.html) multi-pool endpoint is used with a six-second request gate (at most ten requests/minute), an eight-second timeout, one bounded retry for transport/429/5xx failures, and a 60-second cache keyed by Base token and pool. [GoPlus's token-security API](https://docs.gopluslabs.io/reference/tokensecurityusingget_1) uses no API key; requests are spaced by at least two seconds (at most 30/minute), and results are kept separate from market data and cached for 60 seconds by Base token. An explicit closed-source flag, honeypot, buy/sell restriction, blacklist/transfer restriction, modifiable tax, or buy/sell tax above 10% rejects eligibility. Missing GoPlus flags remain unknown and do not block otherwise-complete evidence; they are never interpreted as safety or a favorable score. GoPlus exposes no provider observation timestamp in the response, and GeckoTerminal/DexScreener do not provide a reliable per-quote update timestamp, so local fetch time plus the documented short cache lifetime is the best available freshness bound. If a provider is unavailable, a field is malformed, evidence is stale, pools disagree, or prices conflict, the token is ineligible. Blockscout reputation is not required.
+
+This transparent gate is not a security score and cannot establish that a token is safe, that reported liquidity is withdrawable, that activity is organic, that prices are executable, or that the contract has no malicious behavior. GoPlus only contributes explicit adverse findings; absence of a finding is not a safety guarantee. Base RPC balance verification establishes only that the queried address has a balance, and pool-token reads establish pool identity only. Displayed DexScreener quotes remain indicative; only quotes passing the complete eligibility policy can be treated as verified for Clean Dust selection. No token is specially whitelisted.
 
 Tokens without a usable price remain visible in the full-results view but are not automatically selected as eligible dust.
 

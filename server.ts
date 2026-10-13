@@ -878,11 +878,10 @@ async function startServer() {
     try {
       const discovery = await discoverBaseTokenCandidates(address, {
         alchemyApiKey: process.env.ALCHEMY_API_KEY,
-        moralisApiKey: process.env.MORALIS_API_KEY,
       });
       return res.status(discoveryHttpStatus(discovery)).json(discovery);
     } catch (error: any) {
-      console.error("Critical backend scan failure:", error.message);
+      console.error("Critical backend scan failure:", error instanceof Error ? error.name : "unknown_error");
       res.status(500).json({ error: "Internal server error during scan" });
     }
   });
@@ -905,7 +904,7 @@ async function startServer() {
       );
       return res.status(verification.status === "verification_unavailable" ? 503 : 200).json(verification);
     } catch (error) {
-      console.error("Base RPC verification failed:", error);
+      console.error("Base RPC verification failed:", error instanceof Error ? error.name : "unknown_error");
       return res.status(503).json({ status: "verification_unavailable", error: "Base RPC verification failed" });
     }
   });
@@ -913,12 +912,9 @@ async function startServer() {
   app.get("/api/swap/quote", async (req, res) => {
     const { src, dst, amount, from } = req.query;
 
-    console.log("🧪 LI.FI PARAMS:", { src, dst, amount, from });
-
     if (!src || !dst || !amount || !from) {
       return res.status(400).json({
-        error: "Missing required params",
-        received: { src, dst, amount, from }
+        error: "Missing required params"
       });
     }
 
@@ -936,10 +932,9 @@ async function startServer() {
       });
 
       if (!response.data.transactionRequest) {
-        console.log("❌ NO ROUTE FROM LI.FI:", response.data);
+        console.warn("LI.FI quote returned no transaction request");
         return res.status(500).json({
-          error: "No route found",
-          full: response.data
+          error: "No route found"
         });
       }
 
@@ -958,15 +953,14 @@ async function startServer() {
       });
 
     } catch (e: any) {
-      console.error("LI.FI failed:", e.response?.data || e.message);
-      res.status(500).json(e.response?.data || { error: "LI.FI quote failed" });
+      console.error("LI.FI quote failed", e instanceof Error ? e.name : "unknown_error");
+      res.status(500).json({ error: "LI.FI quote failed" });
     }
   });
 
   // Proxy for merkle.io to avoid CORS
   app.post('/api/proxy/merkle', async (req, res) => {
     try {
-      console.log('Proxying request to merkle.io');
       const response = await axios.post('https://eth.merkle.io/', req.body, {
         headers: {
           'Content-Type': 'application/json',
@@ -977,15 +971,8 @@ async function startServer() {
       });
       res.json(response.data);
     } catch (error: any) {
-      console.error('Merkle proxy error:', error.message);
-      if (error.response) {
-        console.error('Response status:', error.response.status);
-        console.error('Response data:', error.response.data);
-      }
-      res.status(error.response?.status || 500).json({ 
-        error: 'Proxy request failed',
-        details: error.message 
-      });
+      console.error('Merkle proxy failed', error instanceof Error ? error.name : 'unknown_error');
+      res.status(error.response?.status || 500).json({ error: 'Proxy request failed' });
     }
   });
 
@@ -993,7 +980,6 @@ async function startServer() {
   app.get('/api/proxy/ens/:address', async (req, res) => {
     try {
       const { address } = req.params;
-      console.log(`Proxying ENS request for address: ${address}`);
       const response = await axios.get(`https://api.hey.xyz/ens/ccip/${address}`, {
         headers: {
           'Origin': 'https://dust-engine.onrender.com',
@@ -1003,15 +989,8 @@ async function startServer() {
       });
       res.json(response.data);
     } catch (error: any) {
-      console.error('ENS proxy error:', error.message);
-      if (error.response) {
-        console.error('Response status:', error.response.status);
-        console.error('Response data:', error.response.data);
-      }
-      res.status(error.response?.status || 500).json({ 
-        error: 'ENS resolution failed',
-        details: error.message 
-      });
+      console.error('ENS resolution proxy failed', error instanceof Error ? error.name : 'unknown_error');
+      res.status(error.response?.status || 500).json({ error: 'ENS resolution failed' });
     }
   });
 
@@ -1066,4 +1045,4 @@ async function startServer() {
   process.once("SIGTERM", stopXContentWorker);
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => console.error("Server startup failed:", error instanceof Error ? error.name : "unknown_error"));

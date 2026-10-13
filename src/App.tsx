@@ -70,15 +70,41 @@ import AchievementsPanel from "./achievements/AchievementsPanel";
 import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
 import { createScanRunGuard, withConsoleTimer } from "./scanLifecycle";
-import { recordSuccessfulBalances, verifiedPositiveBalances } from "./scanBalanceVerification";
+import {
+  isTransientBalanceReadError,
+  MAX_INDIVIDUAL_BALANCE_RETRIES_PER_SCAN,
+  recordSuccessfulBalances,
+  retryFailedBalanceReads,
+  verifiedPositiveBalances,
+} from "./scanBalanceVerification";
 import {
   createInitialQuotes,
   fetchDexScreenerQuotes,
   indicativePriceAddresses,
+  manualTokenPriceQuote,
+  MIN_DEX_TRADES_24H,
+  MIN_DEX_VOLUME_24H_USD,
+  MIN_TRUSTED_LIQUIDITY_USD,
+  potentialMarketEvidenceAddresses,
+  qualifyingMarketEvidencePools,
   type BlockscoutQuote,
   type PriceQuote,
 } from "./tokenPricing";
 import { evaluateCleanDustEligibility } from "./tokenEligibility";
+import {
+  acquireGeckoRequestSlot,
+  acquireGoPlusRequestSlot,
+  fetchGeckoMarketEvidenceDetailed,
+  marketEvidencePoolKey,
+  fetchGoPlusRisk,
+  marketEvidenceCache,
+  MARKET_EVIDENCE_LIMIT,
+  summarizeGoPlusDiagnostics,
+  type PoolIdentity,
+} from "./marketEvidence";
+import { diagnoseCleanDustScan, diagnoseDustToken, isDetectedDust, isInitiallySelectedDust } from "./cleanDustDetection";
+import { diagnoseRouteQuote } from "./executionQuote";
+import { createProviderRequestMetrics, measureProviderRequest, roundedDurationMs } from "./scanDiagnostics";
 import { getWalletErrorDetails, logWalletDiagnostic, type WalletDiagnosticState } from "./walletDiagnostics";
 
 const farcasterDiagnosticProviders = new WeakMap<object, object>();
@@ -395,8 +421,13 @@ interface TokenInfo {
   formattedBalance: string;
   priceUsd: number;
   valueUsd: number;
+  priceAcceptedForDust: boolean;
+  /** Legacy compatibility alias for scan-price admission, not route verification. */
   isVerified: boolean;
   isEligible: boolean;
+  eligibilityReason?: string;
+  priceSource?: string;
+  priceEvidenceStatus: "locally_configured" | "market_corroborated" | "indicative" | "unavailable";
   selected: boolean;
 }
 
@@ -417,11 +448,16 @@ function resolveErc20Metadata(
 }
 
 function metadataErrorCategory(error: unknown): string {
-  const details = error as { name?: unknown; message?: unknown; shortMessage?: unknown };
-  const message = [details?.name, details?.shortMessage, details?.message]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
+  const messages: string[] = [];
+  let current = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const details = current as { name?: unknown; message?: unknown; shortMessage?: unknown; code?: unknown; status?: unknown; cause?: unknown };
+    messages.push(...[details.name, details.shortMessage, details.message, details.code, details.status]
+      .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+      .map(String));
+    current = details.cause;
+  }
+  const message = messages.join(" ").toLowerCase();
   if (/429|rate.limit/.test(message)) return "rate_limited";
   if (/timeout|timed out|abort/.test(message)) return "timeout";
   if (/http|fetch|network|transport/.test(message)) return "transport_failure";
@@ -1034,19 +1070,74 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       addLog("INITIATING AGGRESSIVE SCAN...");
       let discoveredTokens: any[] = [];
       let blockscoutQuotes: Record<string, BlockscoutQuote> | undefined;
+      let discoveryIncomplete = false;
+      const targetScanAddresses = [
+        "0x696f9436b67233384889472cd7cd58a6fb5df4f1",
+        "0x5b2193fdc451c1f847be09ca9d13a4bf60f8c86b",
+        "0x1111111111166b7fe7bd91427724b487980afc69",
+      ];
+      const targetScanStages = new Map(targetScanAddresses.map((targetAddress) => [targetAddress, {
+        address: targetAddress,
+        discoveryStatus: "not_received" as string,
+        discoveryPresent: false,
+        discoverySources: [] as string[],
+        deduplicatedPresent: false,
+        finalScanListPresent: false,
+        balanceRequestMade: false,
+        balanceReadStatus: "not_requested" as string,
+        balanceReadErrorCategory: null as string | null,
+        rawBalance: null as string | null,
+        formattedBalance: null as string | null,
+        positiveBalance: false,
+        metadataStatus: "not_requested" as string,
+        symbol: null as string | null,
+        decimals: null as number | null,
+        pricingInput: false,
+      }]));
+      const logTargetScanStage = (stage: string) => {
+        if (!import.meta.env.DEV) return;
+        console.info(`[Clean Dust] target scan pipeline ${stage}`, JSON.stringify(
+          targetScanAddresses.map((targetAddress) => targetScanStages.get(targetAddress)),
+          null,
+          2,
+        ));
+      };
 
       // 1.1 Backend Deep Scan
       try {
         const targetAddress = addressToScan || address;
 
-        console.log("SCAN ADDRESS:", targetAddress);
-
         const backendRes = await axios.get(`/api/scan/${targetAddress}`, {
           timeout: 60000,
         });
 
-        console.log("BACKEND RAW RESPONSE:", backendRes.data);
         console.log("TOKEN COUNT:", backendRes.data?.tokens?.length);
+
+        const discoveryTokens = Array.isArray(backendRes.data?.tokens) ? backendRes.data.tokens : [];
+        for (const targetAddress of targetScanAddresses) {
+          const target = targetScanStages.get(targetAddress)!;
+          target.discoveryStatus = typeof backendRes.data?.status === "string" ? backendRes.data.status : "missing_status";
+          const discovered = discoveryTokens.find((token: any) => token?.address?.toLowerCase() === targetAddress);
+          target.discoveryPresent = !!discovered;
+          target.discoverySources = Array.isArray(discovered?.sources) ? discovered.sources : [];
+        }
+        logTargetScanStage("discovery_response");
+        if (import.meta.env.DEV && Array.isArray(backendRes.data?.discovery?.sources)) {
+          console.info("[Clean Dust] discovery provider summary", JSON.stringify(
+            backendRes.data.discovery.sources.map((source: any) => ({
+              source: source.source,
+              status: source.status,
+              pages: source.pages,
+              candidateCount: Array.isArray(source.candidates) ? source.candidates.length : 0,
+              targetPresence: Object.fromEntries(targetScanAddresses.map((targetAddress) => [
+                targetAddress,
+                Array.isArray(source.candidates) && source.candidates.some((candidate: any) => candidate?.address?.toLowerCase() === targetAddress),
+              ])),
+            })),
+            null,
+            2,
+          ));
+        }
 
         if (backendRes.data?.status === "discovery_unavailable") {
           addLog("SCANNER UNAVAILABLE: RETRY IN A MOMENT");
@@ -1054,6 +1145,8 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         }
 
         if (backendRes.data?.status === "success" || backendRes.data?.status === "partial_success") {
+          discoveryIncomplete = backendRes.data.status === "partial_success"
+            || backendRes.data.discovery?.sources?.some((source: any) => source.status === "capped");
           blockscoutQuotes = backendRes.data.blockscoutQuotes;
           discoveredTokens = [
             ...discoveredTokens,
@@ -1062,9 +1155,14 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
             ...backendRes.data.tokens.map((t: any) => ({ address: t.address, source: t.sources?.join(",") })),
           ];
           addLog(`BACKEND: DISCOVERED ${backendRes.data.tokens.length} ASSETS`);
+          if (discoveryIncomplete) addLog("DISCOVERY PARTIAL: SOME PROVIDERS FAILED OR REACHED A CAP");
         }
       } catch (e: any) {
-        console.warn("Backend scan failed", e);
+        console.warn("Backend scan failed", e instanceof Error ? e.name : "unknown_error");
+        for (const targetAddress of targetScanAddresses) {
+          targetScanStages.get(targetAddress)!.discoveryStatus = "request_failed";
+        }
+        logTargetScanStage("discovery_response");
         if (e.response?.status === 503 || e.response?.data?.status === "discovery_unavailable") {
           addLog("SCANNER UNAVAILABLE: RETRY IN A MOMENT");
           return;
@@ -1110,9 +1208,9 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
             });
           }
         }
-      } catch (e) { console.warn("Deep scan failed", e); }
+      } catch (e) { console.warn("Deep scan failed", e instanceof Error ? e.name : "unknown_error"); }
       */
-      console.log("Liquidity Map:", liquidityMap);
+      console.log("LIQUIDITY MAP ENTRY COUNT:", Object.keys(liquidityMap).length);
 
       const candidatesByAddress = new Map<string, any>();
       const mergeCandidate = (candidate: any) => {
@@ -1151,6 +1249,11 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       discoveredTokens.forEach(mergeCandidate);
       oneInchTokens.forEach(mergeCandidate);
 
+      for (const targetAddress of targetScanAddresses) {
+        targetScanStages.get(targetAddress)!.deduplicatedPresent = candidatesByAddress.has(targetAddress);
+      }
+      logTargetScanStage("deduplicated_candidates");
+
       const finalScanList = Array.from(candidatesByAddress.values())
         .filter((t) => {
           if (!t.address) return false;
@@ -1181,6 +1284,11 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
           };
         });
 
+      for (const targetAddress of targetScanAddresses) {
+        targetScanStages.get(targetAddress)!.finalScanListPresent = finalScanList.some((token) => token.address.toLowerCase() === targetAddress);
+      }
+      logTargetScanStage("balance_request_candidates");
+
       addLog(`INDEXER PROVIDED TOKENS`);
       await withConsoleTimer("⏱️ TOTAL SCAN", async () => {
 
@@ -1192,8 +1300,16 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       // 2. Browser-side Base RPC balance verification.
       const chunkSize = 100;
       const balancesByAddress = new Map<string, bigint>();
+      const balanceReadStatuses = new Map<string, string>();
+      let individualBalanceRetriesRemaining = MAX_INDIVIDUAL_BALANCE_RETRIES_PER_SCAN;
       for (let i = 0; i < validTokens.length; i += chunkSize) {
         const chunk = validTokens.slice(i, i + chunkSize);
+        const targetChunkTokens = chunk.filter((token) => targetScanStages.has(token.address.toLowerCase()));
+        targetChunkTokens.forEach((token) => {
+          const target = targetScanStages.get(token.address.toLowerCase())!;
+          target.balanceRequestMade = true;
+          target.balanceReadStatus = "pending";
+        });
         addLog(
           `SCANNING CHUNK ${Math.floor(i / chunkSize) + 1}/${Math.ceil(finalScanList.length / chunkSize)}...`,
         );
@@ -1202,7 +1318,8 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         let retries = 0;
         while (!success && retries < 2) {
           try {
-            const results = await (scannerRpcClient as any).multicall({
+            const multicallResults = await (scannerRpcClient as any).multicall({
+              allowFailure: true,
               contracts: chunk.map((token) => ({
                 address: token.address,
                 abi: ERC20_ABI,
@@ -1210,11 +1327,63 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
                 args: [addressToScan as Address],
               })),
             });
+            const retried = await retryFailedBalanceReads(
+              chunk,
+              multicallResults,
+              async (token) => ({
+                status: "success",
+                result: await (scannerRpcClient as any).readContract({
+                  address: token.address,
+                  abi: ERC20_ABI,
+                  functionName: "balanceOf",
+                  args: [addressToScan as Address],
+                }),
+              }),
+              isTransientBalanceReadError,
+              undefined,
+              individualBalanceRetriesRemaining,
+            );
+            individualBalanceRetriesRemaining -= retried.retriedCount;
+            const results = retried.results;
+            targetChunkTokens.forEach((token) => {
+              const targetAddress = token.address.toLowerCase();
+              const result = results[chunk.findIndex((candidate) => candidate.address.toLowerCase() === targetAddress)];
+              const target = targetScanStages.get(targetAddress)!;
+              if (result?.status === "success" && typeof result.result === "bigint") {
+                target.rawBalance = result.result.toString();
+                target.balanceReadStatus = result.result > 0n ? "verified_positive" : "verified_zero";
+                balanceReadStatuses.set(targetAddress, target.balanceReadStatus);
+              } else {
+                target.balanceReadStatus = result?.status === "failure"
+                  ? `unavailable_${metadataErrorCategory(result.error)}`
+                  : "unavailable_missing_or_undecodable_result";
+                if (result?.error) target.balanceReadErrorCategory = metadataErrorCategory(result.error);
+                balanceReadStatuses.set(targetAddress, target.balanceReadStatus);
+              }
+            });
             recordSuccessfulBalances(balancesByAddress, chunk, results);
+            const verifiedResults = results.filter((result: any) => result?.status === "success" && typeof result.result === "bigint");
+            console.info("[Clean Dust] balance chunk summary", {
+              chunkIndex: Math.floor(i / chunkSize) + 1,
+              candidateCount: chunk.length,
+              verifiedCount: verifiedResults.length,
+              positiveCount: verifiedResults.filter((result: any) => result.result > 0n).length,
+              zeroCount: verifiedResults.filter((result: any) => result.result === 0n).length,
+              unavailableCount: chunk.length - verifiedResults.length,
+              retriedCount: retried.retriedCount,
+              retryOmittedCount: retried.retryOmittedCount,
+            });
             success = true;
-          } catch {
+          } catch (balanceError) {
             retries += 1;
             if (retries === 2) {
+              targetChunkTokens.forEach((token) => {
+                const targetAddress = token.address.toLowerCase();
+                const target = targetScanStages.get(targetAddress)!;
+                target.balanceReadStatus = `multicall_request_failed_after_retries:${metadataErrorCategory(balanceError)}`;
+                target.balanceReadErrorCategory = metadataErrorCategory(balanceError);
+                balanceReadStatuses.set(targetAddress, target.balanceReadStatus);
+              });
               addLog(`CHUNK ${Math.floor(i / chunkSize) + 1} FAILED.`);
             } else {
               await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1231,6 +1400,13 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         tokensWithBalance.push(token);
         balancesForTokens.push(balance);
       });
+
+      for (const targetAddress of targetScanAddresses) {
+        const target = targetScanStages.get(targetAddress)!;
+        target.positiveBalance = tokensWithBalance.some((token) => token.address.toLowerCase() === targetAddress);
+        if (target.balanceReadStatus === "pending") target.balanceReadStatus = balanceReadStatuses.get(targetAddress) || "no_result_recorded";
+      }
+      logTargetScanStage("balance_verification");
 
       addLog(`BALANCES DETECTED: ${tokensWithBalance.length} ASSETS`);
 
@@ -1298,10 +1474,21 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       const balancesWithMetadata: bigint[] = [];
       tokensWithBalance.forEach((token, index) => {
         const metadata = metadataByAddress.get(token.address.toLowerCase());
+        const target = targetScanStages.get(token.address.toLowerCase());
+        if (target) {
+          target.metadataStatus = metadata ? "valid" : "missing_or_invalid_decimals";
+          target.symbol = metadata?.symbol ?? null;
+          target.decimals = metadata?.decimals ?? null;
+        }
         if (!metadata) return;
         tokensWithMetadata.push({ ...token, ...metadata });
         balancesWithMetadata.push(balancesForTokens[index]);
       });
+      for (const targetAddress of targetScanAddresses) {
+        const target = targetScanStages.get(targetAddress)!;
+        if (!target.positiveBalance) target.metadataStatus = "not_requested_without_positive_balance";
+      }
+      logTargetScanStage("metadata_resolution");
       if (metadataFailures > 0) addLog(`METADATA UNAVAILABLE FOR ${metadataFailures} ASSETS`);
       addLog(`METADATA RESOLVED: ${tokensWithMetadata.length} ASSETS`);
 
@@ -1316,19 +1503,17 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
           balance,
         };
       });
+      for (let i = 0; i < tokensWithMetadata.length; i += 1) {
+        const target = targetScanStages.get(tokensWithMetadata[i].address.toLowerCase());
+        if (target) target.formattedBalance = formatUnits(balancesWithMetadata[i], tokensWithMetadata[i].decimals);
+      }
 
-      console.log("✅ NORMALIZED:", normalizedBalances.slice(0, 5));
+      console.log("NORMALIZED TOKEN COUNT:", normalizedBalances.length);
 
       console.timeEnd("⏱️ BALANCE FETCH");
 
-      console.log(
-        "🧪 TOKENS WITH BALANCE:",
-        tokensWithMetadata.map((t) => t.symbol),
-      );
-      console.log(
-        "🧪 BALANCES:",
-        balancesWithMetadata.map((b) => b.toString()),
-      );
+      console.log("TOKENS WITH METADATA COUNT:", tokensWithMetadata.length);
+      console.log("BALANCE RESULTS COUNT:", balancesWithMetadata.length);
 
       if (tokensWithMetadata.length === 0) {
         addLog("NO TOKENS WITH USABLE ON-CHAIN METADATA");
@@ -1338,13 +1523,273 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
 
       // --- Phase 3: Price Fetching & Verification ---
       console.time("⏱️ PRICE FETCH");
+      const priceEvidenceStartedAt = performance.now();
       addLog(`FETCHING PRICES FOR ${tokensWithMetadata.length} ASSETS...`);
       const quotes: Record<string, PriceQuote> = createInitialQuotes(LOCAL_KNOWN_PRICES, blockscoutQuotes);
       const priceCandidates = indicativePriceAddresses(tokensWithMetadata, WETH);
+      for (const targetAddress of targetScanAddresses) {
+        targetScanStages.get(targetAddress)!.pricingInput = priceCandidates.includes(targetAddress);
+      }
+      logTargetScanStage("pricing_input");
+      const dexScreenerMetrics = createProviderRequestMetrics();
       const dexScreenerQuotes = await fetchDexScreenerQuotes(
         priceCandidates,
-        (url) => axios.get(url, { timeout: 8000 }),
+        (url) => measureProviderRequest(dexScreenerMetrics, () => axios.get(url, { timeout: 8000 })),
       );
+      const canonicalAddresses = new Set(Object.keys(LOCAL_KNOWN_PRICES).map((address) => address.toLowerCase()));
+      const marketCandidates = potentialMarketEvidenceAddresses(
+        tokensWithMetadata,
+        dexScreenerQuotes,
+        MARKET_EVIDENCE_LIMIT,
+        canonicalAddresses,
+      ).flatMap((address) => {
+        const dex = dexScreenerQuotes[address];
+        return qualifyingMarketEvidencePools(dex).map((poolQuote) => ({ address, dex: poolQuote }));
+      });
+      const marketEvidenceDiagnosticTargets = [
+        "0x696f9436b67233384889472cd7cd58a6fb5df4f1",
+        "0x5b2193fdc451c1f847be09ca9d13a4bf60f8c86b",
+        "0x1111111111166b7fe7bd91427724b487980afc69",
+      ];
+      let marketEvidenceTargetTrace: Array<Record<string, unknown>> = [];
+      if (import.meta.env.DEV) {
+        const qualifiedBeforeLimit = potentialMarketEvidenceAddresses(
+          tokensWithMetadata,
+          dexScreenerQuotes,
+          Number.MAX_SAFE_INTEGER,
+          canonicalAddresses,
+        );
+        marketEvidenceTargetTrace = marketEvidenceDiagnosticTargets.map((address) => {
+          const quote = dexScreenerQuotes[address];
+          const liquidityOk = Number.isFinite(quote?.liquidityUsd)
+            && (quote?.liquidityUsd ?? 0) >= MIN_TRUSTED_LIQUIDITY_USD;
+          const volumeOk = Number.isFinite(quote?.volume24hUsd)
+            && (quote?.volume24hUsd ?? 0) >= MIN_DEX_VOLUME_24H_USD;
+          const tradesPresent = Number.isFinite(quote?.buys24h) && Number.isFinite(quote?.sells24h);
+          const buysOk = (quote?.buys24h ?? 0) > 0;
+          const sellsOk = (quote?.sells24h ?? 0) > 0;
+          const tradesOk = (quote?.buys24h ?? 0) + (quote?.sells24h ?? 0) >= MIN_DEX_TRADES_24H;
+          const rank = qualifiedBeforeLimit.indexOf(address);
+          const selected = marketCandidates.some((candidate) => candidate.address === address);
+          const failedCandidateGates = [
+            ...(!quote || quote.source !== "dexscreener" ? ["missing_dexscreener_quote"] : []),
+            ...(!liquidityOk ? ["liquidity_below_or_missing_minimum"] : []),
+            ...(!volumeOk ? ["volume_below_or_missing_minimum"] : []),
+            ...(!tradesPresent ? ["buy_sell_counts_missing_or_invalid"] : []),
+            ...(tradesPresent && !buysOk ? ["buys_not_positive"] : []),
+            ...(tradesPresent && !sellsOk ? ["sells_not_positive"] : []),
+            ...(tradesPresent && buysOk && sellsOk && !tradesOk ? ["total_trades_below_minimum"] : []),
+          ];
+          const poolCandidateDiagnostics = (quote?.poolCandidates?.length ? quote.poolCandidates : quote ? [quote] : []).map((pool) => {
+            const poolTradeCount = (pool.buys24h ?? 0) + (pool.sells24h ?? 0);
+            const poolFailures = [
+              ...(!pool.poolAddress || !pool.quoteTokenAddress ? ["missing_pool_or_quote_token_address"] : []),
+              ...(!Number.isFinite(pool.liquidityUsd) || (pool.liquidityUsd ?? 0) < MIN_TRUSTED_LIQUIDITY_USD ? ["liquidity_below_or_missing_minimum"] : []),
+              ...(!Number.isFinite(pool.volume24hUsd) || (pool.volume24hUsd ?? 0) < MIN_DEX_VOLUME_24H_USD ? ["volume_below_or_missing_minimum"] : []),
+              ...(!Number.isFinite(pool.buys24h) || !Number.isFinite(pool.sells24h) ? ["buy_sell_counts_missing_or_invalid"] : []),
+              ...((pool.buys24h ?? 0) <= 0 ? ["buys_not_positive"] : []),
+              ...((pool.sells24h ?? 0) <= 0 ? ["sells_not_positive"] : []),
+              ...(poolTradeCount < MIN_DEX_TRADES_24H ? ["total_trades_below_minimum"] : []),
+            ];
+            return {
+              poolAddress: pool.poolAddress ?? null,
+              quoteTokenAddress: pool.quoteTokenAddress ?? null,
+              priceUsd: pool.priceUsd,
+              liquidityUsd: pool.liquidityUsd ?? null,
+              volume24hUsd: pool.volume24hUsd ?? null,
+              buys24h: pool.buys24h ?? null,
+              sells24h: pool.sells24h ?? null,
+              qualifiedBeforeTokenLimit: poolFailures.length === 0,
+              failedCandidateGates: poolFailures,
+            };
+          });
+          return {
+            address,
+            dexQuote: quote ? {
+              source: quote.source,
+              priceUsd: quote.priceUsd,
+              liquidityUsd: quote.liquidityUsd ?? null,
+              volume24hUsd: quote.volume24hUsd ?? null,
+              buys24h: quote.buys24h ?? null,
+              sells24h: quote.sells24h ?? null,
+              poolAddress: quote.poolAddress ?? null,
+              quoteTokenAddress: quote.quoteTokenAddress ?? null,
+            } : null,
+            candidateGates: {
+              liquidityOk,
+              volumeOk,
+              tradeCountsPresent: tradesPresent,
+              buysOk,
+              sellsOk,
+              tradesOk,
+              failedCandidateGates,
+            },
+            poolCandidateDiagnostics,
+            qualifiedBeforeLimit: rank >= 0,
+            qualifyingRank: rank >= 0 ? rank + 1 : null,
+            marketEvidenceLimit: MARKET_EVIDENCE_LIMIT,
+            selectedForEvidence: selected,
+            exclusionReason: selected
+              ? null
+              : failedCandidateGates[0]
+                ?? (rank >= MARKET_EVIDENCE_LIMIT ? "outside_market_evidence_limit" : "missing_pool_address_or_canonical_exclusion"),
+          };
+        });
+      }
+      const geckoMetrics = createProviderRequestMetrics();
+      const marketEvidenceStartedAt = performance.now();
+      const geckoEvidence = await fetchGeckoMarketEvidenceDetailed(
+        marketCandidates.map(({ address, dex }) => ({ tokenAddress: address, poolAddress: dex.poolAddress! })),
+        (url, timeoutMs) => measureProviderRequest(geckoMetrics, () => axios.get(url, { timeout: timeoutMs })),
+        marketEvidenceCache,
+        // GeckoTerminal is limited to 10 calls/minute, including across scans.
+        acquireGeckoRequestSlot,
+      );
+      const geckoUncachedPoolCount = Object.values(geckoEvidence.diagnostics).filter((diagnostic) => diagnostic.status !== "cached").length;
+      geckoMetrics.retryRequestCount = Math.max(0, geckoMetrics.requestCount - Math.ceil(geckoUncachedPoolCount / MARKET_EVIDENCE_LIMIT));
+      if (import.meta.env.DEV) {
+        console.info("[Clean Dust] market evidence target trace", marketEvidenceTargetTrace.map((target) => {
+          const address = String(target.address);
+          return {
+            ...target,
+            poolResults: marketCandidates.filter((candidate) => candidate.address === address).map(({ dex }) => {
+              const key = marketEvidencePoolKey(address, dex.poolAddress ?? "");
+              return {
+                poolAddress: dex.poolAddress,
+                gecko: geckoEvidence.diagnostics[key] ?? { status: "not_requested" },
+              };
+            }),
+          };
+        }));
+      }
+      const poolIdentityStartedAt = performance.now();
+      let poolIdentityRpcReadCount = publicClient ? 1 : 0; // Includes getChainId when a client is available.
+      const poolIdentities = new Map<string, PoolIdentity>();
+      let evidenceChainId: number | undefined;
+      try { evidenceChainId = publicClient ? await publicClient.getChainId() : undefined; } catch { /* fail closed */ }
+      if (publicClient && evidenceChainId === 8453) {
+        const poolResults = await Promise.all(marketCandidates.map(async ({ address, dex }) => {
+          if (!dex.poolAddress || !dex.quoteTokenAddress) return undefined;
+          try {
+            const poolAbi = [
+              { type: "function", name: "token0", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+              { type: "function", name: "token1", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+            ] as const;
+            const [token0, token1] = await Promise.all([
+              (poolIdentityRpcReadCount += 1, (publicClient as any).readContract({ address: dex.poolAddress as Address, abi: poolAbi, functionName: "token0" })),
+              (poolIdentityRpcReadCount += 1, (publicClient as any).readContract({ address: dex.poolAddress as Address, abi: poolAbi, functionName: "token1" })),
+            ]);
+            return [marketEvidencePoolKey(address, dex.poolAddress), { chainId: evidenceChainId!, token0: String(token0), token1: String(token1), verified: true } as PoolIdentity] as const;
+          } catch { return undefined; }
+        }));
+        for (const result of poolResults) if (result) poolIdentities.set(result[0], result[1]);
+      }
+      const poolIdentityDurationMs = performance.now() - poolIdentityStartedAt;
+      const goPlusMetrics = createProviderRequestMetrics();
+      const goPlusRequestsByToken = new Map<string, number>();
+      const risks = await Promise.all([...new Set(marketCandidates.map(({ address }) => address))].map(async (address) => [address, await fetchGoPlusRisk(
+        address,
+        (url, timeoutMs) => {
+          const requestCountForToken = goPlusRequestsByToken.get(address) ?? 0;
+          goPlusRequestsByToken.set(address, requestCountForToken + 1);
+          return measureProviderRequest(goPlusMetrics, () => axios.get(url, { timeout: timeoutMs }), requestCountForToken > 0);
+        },
+        marketEvidenceCache,
+        acquireGoPlusRequestSlot,
+      )] as const));
+      const riskByAddress = new Map(risks);
+      const marketEligibility = new Map<string, ReturnType<typeof evaluateCleanDustEligibility>>();
+      const poolEligibility = new Map<string, ReturnType<typeof evaluateCleanDustEligibility>>();
+      for (const { address, dex } of marketCandidates) {
+        const evidenceKey = marketEvidencePoolKey(address, dex.poolAddress ?? "");
+        const eligibility = evaluateCleanDustEligibility({
+          address,
+          canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
+          dex,
+          gecko: geckoEvidence.quotes[evidenceKey],
+          pool: poolIdentities.get(evidenceKey),
+          risk: riskByAddress.get(address),
+        });
+        poolEligibility.set(evidenceKey, eligibility);
+        const existing = marketEligibility.get(address);
+        if (!existing || eligibility.eligible) marketEligibility.set(address, eligibility);
+        if (eligibility.eligible) {
+          quotes[address] = { ...dex, source: "corroborated_market", verified: true };
+        }
+      }
+      const goPlusDiagnosticAggregate = summarizeGoPlusDiagnostics(riskByAddress.values());
+      const goPlusTokensWithRequests = goPlusRequestsByToken.size;
+      if (import.meta.env.DEV) {
+        const poolReasonCounts = [...poolEligibility.values()].reduce<Record<string, number>>((counts, result) => {
+          counts[result.reason] = (counts[result.reason] ?? 0) + 1;
+          return counts;
+        }, {});
+        const tokenReasonCounts = [...marketEligibility.values()].reduce<Record<string, number>>((counts, result) => {
+          counts[result.reason] = (counts[result.reason] ?? 0) + 1;
+          return counts;
+        }, {});
+        const geckoDiagnosticCounts = Object.values(geckoEvidence.diagnostics).reduce<Record<string, number>>((counts, result) => {
+          counts[result.status] = (counts[result.status] ?? 0) + 1;
+          return counts;
+        }, {});
+        console.info("[Clean Dust] market evidence evaluation", {
+          poolCandidateCount: marketCandidates.length,
+          tokenCount: marketEligibility.size,
+          eligibleTokenCount: [...marketEligibility.values()].filter((result) => result.eligible).length,
+          poolReasonCounts,
+          tokenReasonCounts,
+          geckoDiagnosticCounts,
+          goPlusDiagnosticAggregate,
+          targetPools: marketCandidates.filter(({ address }) => marketEvidenceDiagnosticTargets.includes(address)).map(({ address, dex }) => {
+            const key = marketEvidencePoolKey(address, dex.poolAddress ?? "");
+            return {
+              address,
+              poolAddress: dex.poolAddress,
+              gecko: geckoEvidence.diagnostics[key] ?? { status: "not_requested" },
+              rpcPoolVerified: Boolean(poolIdentities.get(key)?.verified),
+              eligibilityReason: poolEligibility.get(key)?.reason ?? "not_evaluated",
+            };
+          }),
+        });
+      }
+      const priceEvidenceDurationMs = performance.now() - priceEvidenceStartedAt;
+      const marketEvidenceDurationMs = performance.now() - marketEvidenceStartedAt;
+      if (import.meta.env.DEV) {
+        console.info("[Clean Dust] price/evidence performance", {
+          clock: "performance.now",
+          dexScreener: {
+            requestCount: dexScreenerMetrics.requestCount,
+            failedRequestCount: dexScreenerMetrics.failedRequestCount,
+            requestDurationMs: roundedDurationMs(dexScreenerMetrics.requestDurationMs),
+          },
+          geckoTerminal: {
+            poolCandidateCount: marketCandidates.length,
+            cacheHitPoolCount: Object.values(geckoEvidence.diagnostics).filter((diagnostic) => diagnostic.status === "cached").length,
+            requestCount: geckoMetrics.requestCount,
+            retryRequestCount: geckoMetrics.retryRequestCount,
+            failedRequestCount: geckoMetrics.failedRequestCount,
+            requestDurationMs: roundedDurationMs(geckoMetrics.requestDurationMs),
+          },
+          poolIdentityRpc: {
+            candidatePoolCount: marketCandidates.length,
+            readRequestCount: poolIdentityRpcReadCount,
+            verifiedPoolCount: poolIdentities.size,
+            durationMs: roundedDurationMs(poolIdentityDurationMs),
+          },
+          goPlus: {
+            tokenLookupCount: riskByAddress.size,
+            cachedResultCount: Math.max(0, riskByAddress.size - goPlusTokensWithRequests),
+            requestCount: goPlusMetrics.requestCount,
+            retryRequestCount: goPlusMetrics.retryRequestCount,
+            failedRequestCount: goPlusMetrics.failedRequestCount,
+            requestDurationMs: roundedDurationMs(goPlusMetrics.requestDurationMs),
+            diagnosticAggregate: goPlusDiagnosticAggregate,
+          },
+          totalMarketEvidenceEvaluationMs: roundedDurationMs(marketEvidenceDurationMs),
+          totalPriceEvidencePipelineMs: roundedDurationMs(priceEvidenceDurationMs),
+        });
+      }
+      addLog(`MARKET EVIDENCE: ${marketCandidates.length} POOLS ACROSS ${marketEligibility.size} TOKENS CHECKED; ${[...marketEligibility.values()].filter((item) => item.eligible).length} TOKENS PASSED; REMAINING EVIDENCE UNAVAILABLE OR INCOMPLETE.`);
       console.timeEnd("⏱️ PRICE FETCH");
 
       addLog(`CALCULATING VALUES FOR ${tokensWithMetadata.length} ASSETS...`);
@@ -1360,13 +1805,11 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         // ❌ Ignore WETH from dust detection
         if (addrLower === WETH.toLowerCase()) continue;
 
-        const quote = quotes[addrLower] || dexScreenerQuotes[addrLower];
-        const eligibility = evaluateCleanDustEligibility({
+        const eligibility = marketEligibility.get(addrLower) ?? evaluateCleanDustEligibility({
           address: t.address,
           canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
-          blockscoutQuote: blockscoutQuotes?.[addrLower],
-          dexScreenerQuote: dexScreenerQuotes[addrLower],
         });
+        const quote = quotes[addrLower] || dexScreenerQuotes[addrLower];
         const price = quote?.priceUsd || 0;
         const valueUsd = (parseFloat(formatted) || 0) * price;
 
@@ -1377,18 +1820,159 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
             formattedBalance: formatted,
             priceUsd: price,
             valueUsd,
+            priceAcceptedForDust: quote?.verified === true,
             isVerified: quote?.verified === true,
             isEligible: eligibility.eligible,
-            selected:
-              valueUsd > 0 &&
-              valueUsd < dustThreshold &&
-              quote?.verified === true &&
-              eligibility.eligible,
+            eligibilityReason: eligibility.reason,
+            priceSource: quote?.source,
+            priceEvidenceStatus: quote?.source === "local"
+              ? "locally_configured"
+              : quote?.source === "corroborated_market"
+                ? "market_corroborated"
+                : quote ? "indicative" : "unavailable",
+            selected: isInitiallySelectedDust({
+              address: t.address,
+              symbol: t.symbol,
+              decimals: t.decimals,
+              balance,
+              formattedBalance: formatted,
+              priceUsd: price,
+              valueUsd,
+              priceAcceptedForDust: quote?.verified === true,
+              priceSource: quote?.source,
+              priceEvidenceStatus: quote?.source === "local"
+                ? "locally_configured"
+                : quote?.source === "corroborated_market"
+                  ? "market_corroborated"
+                  : quote ? "indicative" : "unavailable",
+              isVerified: quote?.verified === true,
+              isEligible: eligibility.eligible,
+              eligibilityReason: eligibility.reason,
+            }, dustThreshold),
           });
         }
       }
 
       addLog(`SORTING ${results.length} ASSETS...`);
+      if (import.meta.env.DEV) {
+        const diagnosis = diagnoseCleanDustScan(
+          tokensWithBalance.length,
+          tokensWithMetadata.length,
+          results,
+          dustThreshold,
+        );
+        // Keep wallet-wide token addresses out of diagnostic output. These
+        // aggregates plus the three requested address records are sufficient.
+        console.info("[Clean Dust] scan diagnosis", {
+          ...diagnosis,
+          rejectedTokens: `[${diagnosis.rejectedTokens.length} token records omitted]`,
+        });
+        const diagnosticTargets = [
+          "0x696f9436b67233384889472cd7cd58a6fb5df4f1",
+          "0x5b2193fdc451c1f847be09ca9d13a4bf60f8c86b",
+          "0x1111111111166b7fe7bd91427724b487980afc69",
+        ];
+        const targetRecords = diagnosticTargets.map((targetAddress) => {
+          const token = results.find((candidate) => candidate.address.toLowerCase() === targetAddress);
+          if (!token) {
+            const metadataIndex = tokensWithMetadata.findIndex((candidate) => candidate.address.toLowerCase() === targetAddress);
+            const metadata = metadataIndex >= 0 ? tokensWithMetadata[metadataIndex] : undefined;
+            const rawBalance = metadataIndex >= 0 ? balancesWithMetadata[metadataIndex] : undefined;
+            const quote = quotes[targetAddress] || dexScreenerQuotes[targetAddress];
+            const formattedBalance = metadata && rawBalance !== undefined
+              ? formatUnits(rawBalance, metadata.decimals)
+              : null;
+            return {
+              address: targetAddress,
+              symbol: metadata?.symbol ?? null,
+              decimals: metadata?.decimals ?? null,
+              rawBalance: rawBalance?.toString() ?? null,
+              formattedBalance,
+              priceUsd: quote?.priceUsd ?? null,
+              valueUsd: formattedBalance === null || !quote
+                ? null
+                : (parseFloat(formattedBalance) || 0) * quote.priceUsd,
+              priceSource: quote?.source ?? null,
+              dustThresholdResult: null,
+              eligibility: marketEligibility.get(targetAddress) ?? null,
+              priceEvidenceStatus: quote?.source === "local"
+                ? "locally_configured"
+                : quote?.source === "corroborated_market"
+                  ? "market_corroborated"
+                  : quote ? "indicative" : "unavailable",
+              priceAcceptedForDust: quote?.verified === true,
+              executionPriceVerified: false,
+              executionQuoteStatus: "not_requested_during_scan",
+              marketEvidence: marketEligibility.get(targetAddress) ?? null,
+              dexScreenerEvidence: dexScreenerQuotes[targetAddress] ?? null,
+              geckoEvidence: marketCandidates.filter((candidate) => candidate.address === targetAddress).map((candidate) => {
+                const key = marketEvidencePoolKey(targetAddress, candidate.dex.poolAddress ?? "");
+                return { poolAddress: candidate.dex.poolAddress, evidence: geckoEvidence.quotes[key] ?? null, diagnostic: geckoEvidence.diagnostics[key] ?? null };
+              }),
+              poolIdentity: marketCandidates.filter((candidate) => candidate.address === targetAddress).map((candidate) => poolIdentities.get(marketEvidencePoolKey(targetAddress, candidate.dex.poolAddress ?? "")) ?? null),
+              riskEvidence: riskByAddress.get(targetAddress) ?? null,
+              included: false,
+              rejectionReasons: null,
+              stage: "not_present_in_positive_balance_results",
+            };
+          }
+          const tokenAddress = token.address.toLowerCase();
+          const tokenDiagnosis = diagnoseDustToken(token, dustThreshold);
+          const quote = quotes[tokenAddress] || dexScreenerQuotes[tokenAddress];
+          return {
+            ...tokenDiagnosis,
+            rawBalance: token.balance.toString(),
+            decimals: token.decimals,
+            selected: token.selected,
+            stage: "diagnosed",
+            marketEvidence: marketEligibility.get(tokenAddress) ?? null,
+            dexScreenerEvidence: dexScreenerQuotes[tokenAddress] ?? null,
+            geckoEvidence: marketCandidates.filter((candidate) => candidate.address === tokenAddress).map((candidate) => {
+              const key = marketEvidencePoolKey(tokenAddress, candidate.dex.poolAddress ?? "");
+              return { poolAddress: candidate.dex.poolAddress, evidence: geckoEvidence.quotes[key] ?? null, diagnostic: geckoEvidence.diagnostics[key] ?? null };
+            }),
+            poolIdentity: marketCandidates.filter((candidate) => candidate.address === tokenAddress).map((candidate) => poolIdentities.get(marketEvidencePoolKey(tokenAddress, candidate.dex.poolAddress ?? "")) ?? null),
+            riskEvidence: riskByAddress.get(tokenAddress) ?? null,
+            priceEvidenceStatus: token.priceEvidenceStatus,
+            priceAcceptedForDust: token.isVerified,
+            scanPrice: quote
+              ? { source: quote.source, status: token.priceEvidenceStatus, acceptedForDust: token.isVerified }
+              : { status: "unavailable", acceptedForDust: false },
+            executionPriceVerified: false,
+            executionQuoteStatus: "not_requested_during_scan",
+          };
+        });
+        const targetDiagnosticPayload = {
+          dustThresholdUsd: dustThreshold,
+          aggregateCounts: {
+            positiveVerifiedBalance: diagnosis.positiveVerifiedBalance,
+            validMetadata: diagnosis.validMetadata,
+            priceAvailable: diagnosis.priceAvailable,
+            locallyConfiguredPrice: diagnosis.locallyConfiguredPrice,
+            marketCorroboratedPrice: diagnosis.marketCorroboratedPrice,
+            indicativePrice: diagnosis.indicativePrice,
+            withinDustThreshold: diagnosis.withinDustThreshold,
+            eligible: diagnosis.eligible,
+            priceAcceptedForDust: diagnosis.priceAcceptedForDust,
+            executionPriceVerified: diagnosis.executionPriceVerified,
+            executionQuoteStatus: diagnosis.executionQuoteStatus,
+            detectedDust: diagnosis.detectedDust,
+            rejectedTokenCount: diagnosis.rejectedTokens.length,
+            evaluatedRecords: diagnosis.evaluatedRecords,
+            primaryOutcomeCounts: diagnosis.primaryOutcomeCounts,
+            independentRejectionReasonCounts: diagnosis.independentRejectionReasonCounts,
+          },
+          targetRecords,
+          targetTokensPassingAllChecks: targetRecords
+            .filter((token) => token.included)
+            .map(({ address, symbol, valueUsd }) => ({ address, symbol, valueUsd })),
+        };
+        console.info("[Clean Dust] target token diagnostics", targetDiagnosticPayload);
+        console.info(
+          "[Clean Dust] target token diagnostics JSON",
+          JSON.stringify(targetDiagnosticPayload, null, 2),
+        );
+      }
       results.sort((a, b) => {
         if (Math.abs(b.valueUsd - a.valueUsd) > 0.0001) {
           return b.valueUsd - a.valueUsd;
@@ -1397,10 +1981,12 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       });
 
       setTokens(results);
-      addLog(`SCAN COMPLETE: FOUND ${results.length} ASSETS`);
+      addLog(discoveryIncomplete
+        ? `SCAN PARTIAL: FOUND ${results.length} ASSETS`
+        : `SCAN COMPLETE: FOUND ${results.length} ASSETS`);
       });
     } catch (err: any) {
-      console.error("Analysis failed", err);
+      console.error("Analysis failed", err instanceof Error ? err.name : "unknown_error");
       const errorMsg =
         err.response?.data?.message || err.message || "NETWORK ERROR";
       addLog(`ERROR: ${errorMsg.toUpperCase()}`);
@@ -1431,10 +2017,12 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         (contract as any).read.balanceOf([address as Address]),
       ]);
 
-      const priceRes = await axios.get(
+      const canonicalPrice = LOCAL_KNOWN_PRICES[customAddress.toLowerCase()];
+      const indicativePrice = canonicalPrice ? 0 : (await axios.get(
         `https://api.coingecko.com/api/v3/simple/token_price/base?contract_addresses=${customAddress.toLowerCase()}&vs_currencies=usd`,
-      );
-      const price = priceRes.data[customAddress.toLowerCase()]?.usd || 0;
+      )).data[customAddress.toLowerCase()]?.usd || 0;
+      const manualQuote = manualTokenPriceQuote(customAddress, indicativePrice, LOCAL_KNOWN_PRICES);
+      const price = manualQuote?.priceUsd ?? 0;
       const formatted = formatUnits(balance as bigint, decimals as number);
       const valueUsd = parseFloat(formatted) * price;
 
@@ -1442,7 +2030,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         address: customAddress,
         canonicalAddresses: Object.keys(LOCAL_KNOWN_PRICES),
       });
-      const newToken: TokenInfo = {
+        const newToken: TokenInfo = {
         symbol: symbol as string,
         address: customAddress as Address,
         decimals: decimals as number,
@@ -1450,13 +2038,16 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         formattedBalance: formatted,
         priceUsd: price,
         valueUsd,
-        isVerified: !!price,
+        priceSource: manualQuote?.source,
+        priceAcceptedForDust: eligibility.eligible && manualQuote?.verified === true,
+        isVerified: eligibility.eligible && manualQuote?.verified === true,
+        priceEvidenceStatus: manualQuote?.source === "local" ? "locally_configured" : price ? "indicative" : "unavailable",
         // A manually entered address has no Blockscout evidence in this flow.
         // Only a canonical contract can be selected here; other tokens must be
         // discovered by the scanner and meet the same evidence rules as every
         // other Clean Dust candidate.
         isEligible: eligibility.eligible,
-        selected: eligibility.eligible && !!price,
+        selected: eligibility.eligible && manualQuote?.verified === true,
       };
 
       setTokens((prev) => {
@@ -1468,7 +2059,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       setCustomAddress("");
       addLog(`ADDED CUSTOM TOKEN: ${symbol}`);
     } catch (err) {
-      console.error(err);
+      console.error("Manual token addition failed", err instanceof Error ? err.name : "unknown_error");
       alert("Failed to fetch token info. Ensure it's a valid ERC20 on Base.");
     } finally {
       setIsAddingCustom(false);
@@ -1499,9 +2090,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
 
   const filteredTokens = useMemo(() => {
     if (showAll) return tokens;
-    return tokens.filter(
-      (t) => t.valueUsd >= 0.01 && t.valueUsd <= dustThreshold && t.isVerified && t.isEligible,
-    );
+    return tokens.filter((token) => isDetectedDust(token, dustThreshold));
   }, [tokens, showAll, dustThreshold]);
 
   const totalValueUsd = useMemo(
@@ -1963,7 +2552,7 @@ function TokenRow({
             token.valueUsd > 0 ? "text-emerald-500/80" : "text-zinc-500 italic",
           )}
         >
-          {token.valueUsd > 0 ? `$${token.valueUsd.toFixed(4)}` : "Price N/A"}
+          {token.valueUsd > 0 ? `Est. $${token.valueUsd.toFixed(4)}` : "Price N/A"}
         </p>
       </div>
     </div>
@@ -2013,19 +2602,8 @@ function SwapButton({
     console.log("🟢 BUTTON CLICKED");
 
     console.log("🚀 handleSwap triggered");
-    console.log("TOKENS:", tokens);
+    console.log("CLEAN DUST TOKEN COUNT:", tokens.length);
 
-    tokens.forEach((t, i) => {
-      console.log("TOKEN DEBUG", i, {
-        symbol: t.symbol,
-        valueUsd: t.valueUsd,
-        balance: t.balance,
-        balanceType: typeof t.balance,
-        selected: t.selected,
-      });
-    });
-
-    console.log("ADDRESS:", address);
 
     if (e) {
       e.preventDefault();
@@ -2062,11 +2640,10 @@ function SwapButton({
         const balance =
           typeof t.balance === "bigint" ? t.balance : BigInt(t.balance || 0);
 
-        return t.isEligible && t.isVerified && t.valueUsd >= 0.01 && balance > 0n;
+        return t.isEligible && t.priceAcceptedForDust && t.valueUsd >= 0.01 && balance > 0n;
       });
 
-      console.log("✅ VALID TOKENS:", validTokens);
-      console.log("✅ SELECTED TOKENS:", selectedTokens);
+      console.log("CLEAN DUST ELIGIBLE TOKEN COUNT:", validTokens.length);
 
       let successCount = 0;
       let actualSwappedValue = 0;
@@ -2111,7 +2688,7 @@ function SwapButton({
           batchSupported =
             !!capabilities?.[base.id.toString()]?.atomicBatch?.supported;
         } catch (e) {
-          console.warn("Batching not supported", e);
+          console.warn("Batching not supported", e instanceof Error ? e.name : "unknown_error");
         }
       }
 
@@ -2140,17 +2717,15 @@ function SwapButton({
 
       let nextBitPos = 0n;
 
-      console.log("PERMIT2 BITMAP:", bitmap.toString());
 
       while (nextBitPos < 256n && ((bitmap >> nextBitPos) & 1n) === 1n) {
         nextBitPos++;
       }
 
-      console.log("NEXT BIT POS:", nextBitPos.toString());
 
       for (const token of validTokens) {
         let amount: bigint;
-        console.log("🚀 STARTING SWAP FOR TOKEN:", token.symbol);
+        console.log("Preparing eligible token swap");
         try {
           addLog(`🔄 Swapping ${token.symbol}...`);
           addLog(`PROCESSING ${token.symbol}...`);
@@ -2167,10 +2742,6 @@ function SwapButton({
             amount = parseUnits(token.balance.toString(), token.decimals);
           }
 
-          console.log("🪙 TOKEN:", token.symbol);
-          console.log("RAW BALANCE:", token.balance);
-          console.log("DECIMALS:", token.decimals);
-          console.log("FINAL AMOUNT:", amount.toString());
           console.log("🚨 CHECKPOINT AFTER AMOUNT");
 
           if (amount <= 0n) {
@@ -2180,7 +2751,7 @@ function SwapButton({
 
           amount = (amount * 98n) / 100n;
         } catch (e) {
-          console.log(`❌ Invalid balance for ${token.symbol}:`, token.balance);
+          console.warn("❌ Invalid token balance for swap");
           continue;
         }
 
@@ -2223,7 +2794,7 @@ function SwapButton({
         }
 
         if (amount <= 0n) {
-          console.log(`❌ Skipping ${token.symbol} (invalid amount)`);
+          console.log("❌ Skipping token with invalid amount");
           continue;
         }
 
@@ -2255,32 +2826,17 @@ function SwapButton({
               },
             });
 
-            console.log("🔥 LIFI ROUTES:", routes);
-
-            const step = routes.routes[0].steps[0];
-
-            console.log("STEP TO ADDRESS:", step.action.toAddress);
-
-            if (
-              step.action.toAddress?.toLowerCase() !==
-              DUST_ENGINE_ADDRESS.toLowerCase()
-            ) {
-              throw new Error("LiFi recipient NOT DustEngine");
-            }
-
-            console.log(
-              "STEP DETAILS:",
-              JSON.stringify(routes.routes[0].steps[0], null, 2),
-            );
           } catch (err) {
-            console.log("❌ LIFI ERROR:", err);
+            console.warn("LiFi route request failed");
+            if (import.meta.env.DEV) console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, status: "route_request_failed" });
             addLog(`❌ LiFi failed for ${token.symbol}`);
             continue;
           }
 
           // ✅ VALIDATE RESPONSE
           if (!routes || !routes.routes?.length) {
-            console.log("❌ No routes found:", routes);
+            if (import.meta.env.DEV) console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, status: "route_unavailable" });
+            console.log("❌ No routes found");
             addLog(`❌ No valid route for ${token.symbol}`);
             continue;
           }
@@ -2290,30 +2846,52 @@ function SwapButton({
           const step = route.steps?.[0];
 
           if (!step) {
-            console.log("❌ No step found:", route);
+            if (import.meta.env.DEV) console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, status: "route_unavailable" });
+            console.log("❌ No step found");
             continue;
           }
 
-          // 🔥 THIS IS THE MISSING PIECE
-          const stepTx = await getStepTransaction(step);
-
-          console.log("STEP TX FULL:");
-          console.log(JSON.stringify(stepTx, null, 2));
-
-          const tx = stepTx?.transactionRequest;
-
-          console.log("TX TO ADDRESS:", tx.to);
-          console.log("STEP TO ADDRESS:", step.action.toAddress);
-          console.log("RAW STEP:", step);
-
-          // ✅ FINAL VALIDATION
-          if (!tx || !tx.to || !tx.data) {
-            console.log("❌ Invalid tx constructed:", tx);
+          if (step.action.toAddress?.toLowerCase() !== DUST_ENGINE_ADDRESS.toLowerCase()) {
+            if (import.meta.env.DEV) console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, status: "route_recipient_mismatch" });
             addLog(`❌ Invalid route for ${token.symbol}`);
             continue;
           }
 
-          console.log("✅ FINAL TX:", tx);
+          // 🔥 THIS IS THE MISSING PIECE
+          let stepTx;
+          try {
+            stepTx = await getStepTransaction(step);
+          } catch {
+            if (import.meta.env.DEV) console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, status: "transaction_data_invalid" });
+            addLog(`❌ Invalid route for ${token.symbol}`);
+            continue;
+          }
+
+          const tx = stepTx?.transactionRequest;
+          const routeQuoteDiagnostic = diagnoseRouteQuote({
+            route,
+            step,
+            transactionRequest: tx,
+            requestedInputAmount: amount.toString(),
+            expectedInputToken: token.address,
+            expectedOutputToken: WETH,
+            expectedRecipient: DUST_ENGINE_ADDRESS,
+          });
+          if (import.meta.env.DEV) {
+            console.info("[Clean Dust] route quote diagnostic", { symbol: token.symbol, ...routeQuoteDiagnostic });
+          }
+          if (routeQuoteDiagnostic.status !== "route_quote_validated") {
+            addLog(`❌ Invalid route for ${token.symbol}`);
+            continue;
+          }
+
+          // ✅ FINAL VALIDATION
+          if (!tx || !tx.to || !tx.data) {
+            console.log("❌ Invalid transaction constructed");
+            addLog(`❌ Invalid route for ${token.symbol}`);
+            continue;
+          }
+
 
           // ✅ FIX: VALIDATE BLOCK
           if (
@@ -2322,7 +2900,7 @@ function SwapButton({
             !tx.to.startsWith("0x") ||
             tx.to.length !== 42
           ) {
-            console.log("❌ INVALID tx.to DETECTED:", tx.to);
+            console.log("❌ INVALID tx.to DETECTED");
             addLog(`❌ Invalid route for ${token.symbol}`);
             continue; // 🚨 SKIP THIS TOKEN
           }
@@ -2331,24 +2909,15 @@ function SwapButton({
           tokensArr.push(token.address);
           amountsArr.push(amount);
 
-          console.log("🔥 TX OBJECT:", tx);
-          console.log("🔥 TX TO:", tx.to);
-          console.log("🔥 TX DATA:", tx.data);
-          console.log("🔥 TX VALUE:", tx.value);
 
           // ✅ SAFE PUSH
           targetsArr.push(tx.to as `0x${string}`);
           valuesArr.push(BigInt(tx.value || "0"));
           swapDataArr.push(tx.data as `0x${string}`);
 
-          console.log("📦 BATCH ITEM:", {
-            token: token.symbol,
-            amount: amount.toString(),
-          });
-
           await new Promise((r) => setTimeout(r, 250));
         } catch (err: any) {
-          console.log("❌ SWAP ERROR:", err?.response?.data || err.message);
+          console.warn("❌ SWAP ERROR:", err?.name || "unknown_error");
           addLog(`❌ Swap failed for ${token.symbol}`);
           continue;
         }
@@ -2425,16 +2994,6 @@ function SwapButton({
             `✍️ Sign one Permit for ${tokensArr.length} tokens...`
           );
 
-          console.log("DOMAIN:", domain);
-          console.log("MESSAGE:", message);
-          console.log("PERMIT2:", PERMIT2_ADDRESS);
-          console.log("SPENDER:", DUST_ENGINE_ADDRESS);
-
-          console.log(
-            "TYPES:",
-            JSON.stringify(types, null, 2)
-          );
-
           batchSignature =
             await signTypedDataAsync({
               domain,
@@ -2444,43 +3003,12 @@ function SwapButton({
               message,
             });
 
-          console.log(
-            "BATCH SIGNATURE:",
-            batchSignature
-          );
-
           addLog("🚀 Executing via contract...");
 
-          console.log("TOKENS:", tokensArr);
-          console.log("AMOUNTS:", amountsArr);
-          console.log("TARGETS:", targetsArr);
-          console.log("VALUES:", valuesArr);
-          console.log("DATA SAMPLE:", swapDataArr[0]);
-          console.log("DATA LENGTH:", swapDataArr.length);
-
-          console.log("🚀 FINAL BATCH:", {
-            tokensArr,
-            amountsArr,
-            targetsArr,
-            valuesArr,
-            swapDataArr,
-          });
-
-          console.log("ABI FUNCTIONS:");
-
-          DUST_ENGINE_ABI.forEach((item, i) => {
-            if (item.type === "function") {
-              console.log(
-                i,
-                item.name,
-                "inputs:",
-                item.inputs?.length
-              );
-            }
-          });
+          console.info("Transaction batch prepared", { tokenCount: tokensArr.length, targetCount: targetsArr.length, valueCount: valuesArr.length, swapCount: swapDataArr.length });
 
           try {
-            const sim = await publicClient.simulateContract({
+            await publicClient.simulateContract({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
               functionName: "cleanDust",
@@ -2497,9 +3025,9 @@ function SwapButton({
               account: address,
             });
 
-            console.log("SIMULATION OK", sim);
+            console.log("SIMULATION OK");
           } catch (e) {
-            console.error("SIMULATION ERROR", e);
+            console.error("SIMULATION ERROR", e instanceof Error ? e.name : "unknown_error");
           
             const bitmapAfter = await publicClient.readContract({
               address: PERMIT2_ADDRESS,
@@ -2508,19 +3036,13 @@ function SwapButton({
               args: [address as `0x${string}`, 0n],
             });
 
-            console.log("BITMAP AFTER:", bitmapAfter.toString());
+            console.log("Permit nonce bitmap checked after simulation failure");
+            throw new Error("Clean Dust batch simulation failed");
 
           }
 
           try {
       
-            const cleanDustAbi = DUST_ENGINE_ABI.find(
-              (x) => x.type === "function" && x.name === "cleanDust"
-            );
-
-            console.log("CLEAN DUST ABI:");
-            console.log(cleanDustAbi);
-
             const hash = await writeContractAsync({
               address: DUST_ENGINE_ADDRESS,
               abi: DUST_ENGINE_ABI,
@@ -2537,8 +3059,6 @@ function SwapButton({
               ],
             });
 
-            console.log("TX HASH:", hash);
-
             addLog(`📤 TX SENT: ${hash.slice(0, 10)}...`);
             addLog("⏳ Waiting for confirmation...");
 
@@ -2546,39 +3066,16 @@ function SwapButton({
               hash,
             });
 
-            const tx = await publicClient.getTransaction({
-              hash,
-            });
+            await publicClient.getTransaction({ hash });
 
-            console.log("FROM:", tx.from);
-            console.log("TO:", tx.to);
-            console.log("INPUT:", tx.input);
-
-            console.log("RECEIPT:", receipt);
             console.log("RECEIPT STATUS:", receipt.status);
             console.log("GAS USED:", receipt.gasUsed?.toString());
-            console.log("LOGS:", receipt.logs);
-            
-            receipt.logs.forEach((log, i) => {
-              console.log("FULL LOG", i);
-              console.log("ADDRESS:", log.address);
-              console.log("TOPICS:", log.topics);
-              console.log("DATA:", log.data);
-            });
-
-            console.log("DEBUG EVENT RAW:", receipt.logs);
             
             const SWAP_FAILED_TOPIC =
               "0xfe6bbaf9875f995c8d6dacfc5247772cf0a90b3efd2b5c71204476c142ce3c4f";
 
             const DEBUG_TOPIC =
               "0x831cbf9f01add60715b6c2ea1016801f01c3570519cef4de93ce9c722257cca5";
-
-            const DEBUG_DATA_TOPIC =
-              "0x" +
-              keccak256(
-                toBytes("DebugData(bytes)")
-              ).slice(2);
 
             const swapFailed = receipt.logs.some(
               (log) =>
@@ -2595,20 +3092,6 @@ function SwapButton({
             console.log("SWAP FAILED?", swapFailed);
             console.log("DEBUG SUCCESS?", debugSuccess);
 
-            const debugDataLog = receipt.logs.find(
-              (log) =>
-                log.address.toLowerCase() === DUST_ENGINE_ADDRESS.toLowerCase() &&
-                log.topics?.[0]?.toLowerCase() ===
-                  DEBUG_DATA_TOPIC.toLowerCase()
-            );
-
-            console.log("DEBUG DATA LOG:", debugDataLog);
-
-            receipt.logs.forEach((log, i) => {
-              console.log("RAW LOG", i);
-              console.log(log);
-            });
-
             try {
               const decoded = decodeEventLog({
                 abi: DUST_ENGINE_ABI,
@@ -2617,19 +3100,10 @@ function SwapButton({
               });
 
               console.log("DECODED EVENT:", decoded.eventName);
-              console.log("DECODED ARGS:", decoded.args);
             } catch (e) {
               console.log("FAILED TO DECODE");
             }
 
-            console.log(
-              "ALL CONTRACT LOGS",
-              receipt.logs.filter(
-                (l) =>
-                  l.address.toLowerCase() ===
-                  DUST_ENGINE_ADDRESS.toLowerCase()
-              )
-            );
 
             try {
               const parsedLogs = receipt.logs.map((log) => {
@@ -2644,7 +3118,6 @@ function SwapButton({
                 }
               });
 
-              console.log("PARSED LOGS:", parsedLogs);
 
               if (receipt.status === "success") {
                 addLog("✅ Compression transaction confirmed");
@@ -2663,7 +3136,6 @@ function SwapButton({
                     success: log.args.success,
                   }));
 
-                console.log("PER-TOKEN DEBUG RESULTS:", debugResults);
 
                 const successfulAddresses = new Set(
                   debugResults
@@ -2685,8 +3157,7 @@ function SwapButton({
                       )
                     : [];
 
-                console.log("SUCCESSFUL TOKENS:", successfulTokens);
-                console.log("FAILED TOKENS:", failedTokens);
+                console.log("SWAP RESULT COUNTS:", { successful: successfulTokens.length, failed: failedTokens.length });
 
                 successCount = successfulTokens.length;
 
@@ -2719,25 +3190,20 @@ function SwapButton({
                   addLog("❌ No tokens were swapped successfully");
                 }
               } else {
-                console.error("❌ RECEIPT REVERT:", receipt);
-                console.log("REVERT TX HASH:", hash);
+                console.error("❌ RECEIPT REVERT");
                 addLog("❌ Transaction reverted");
               }
             } catch (e) {
-              console.error("❌ LOG PROCESSING ERROR:", e);
+              console.error("❌ LOG PROCESSING ERROR:", e instanceof Error ? e.name : "unknown_error");
             }
 
           } catch (err: any) {
             diagnostic("OPERATION_ERROR", err);
-            console.error("❌ WRITE ERROR FULL:", err);
-            console.error("SHORT MESSAGE:", err?.shortMessage);
-            console.error("CAUSE:", err?.cause);
-            console.error("DETAILS:", err?.details);
-            console.error("RAW ERR:", JSON.stringify(err, null, 2));
+            console.error("❌ WRITE ERROR:", err instanceof Error ? err.name : "unknown_error");
           }
         } catch (err) {
           diagnostic("OPERATION_ERROR", err);
-          console.error("❌ Contract failed:", err);
+          console.error("❌ Contract failed:", err instanceof Error ? err.name : "unknown_error");
 
           if (err?.name === "UserRejectedRequestError") {
             addLog("❌ User rejected transaction");
@@ -2790,7 +3256,7 @@ function SwapButton({
       }
     } catch (err: any) {
       diagnostic("OPERATION_ERROR", err);
-      console.error(err);
+      console.error("Clean Dust operation failed", err instanceof Error ? err.name : "unknown_error");
       const errorDetail =
         err.response?.data?.description ||
         err.response?.data?.error ||

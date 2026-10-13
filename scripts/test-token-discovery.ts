@@ -3,8 +3,8 @@ import { formatUnits } from "viem";
 import {
   discoverAlchemyTokens,
   discoverBaseTokenCandidates,
+  discoverBlockscoutBalances,
   discoverBlockscoutTransfers,
-  discoverMoralisTokens,
   discoveryHttpStatus,
   mergeDiscoveryCandidates,
   type DiscoveryRequest,
@@ -35,15 +35,46 @@ async function run() {
   assert.equal(alchemy.status, "success");
   assert.deepEqual(alchemy.candidates.map((token) => token.address), [a, b]);
 
-  // B. Moralis's REST cursor shape is consumed across pages.
-  const moralis = await discoverMoralisTokens(wallet, {
-    moralisApiKey: "test", request: sequence([
-      { result: [{ token_address: a }], cursor: "next" },
-      { result: [{ token_address: b }] },
+  const malformedLaterAlchemyPage = await discoverAlchemyTokens(wallet, {
+    alchemyApiKey: "test",
+    request: sequence([
+      { result: { tokenBalances: [{ contractAddress: a }], pageKey: "next" } },
+      { result: { tokenBalances: "malformed" } },
     ]),
   });
-  assert.equal(moralis.status, "success");
-  assert.deepEqual(moralis.candidates.map((token) => token.address), [a, b]);
+  assert.equal(malformedLaterAlchemyPage.status, "partial");
+  assert.deepEqual(malformedLaterAlchemyPage.candidates.map((token) => token.address), [a], "valid first-page addresses survive a malformed later page");
+
+  const malformedLaterTransfersPage = await discoverBlockscoutTransfers(wallet, {
+    request: sequence([
+      { items: [{ token: { address_hash: a, type: "ERC-20" } }], next_page_params: { block_number: 2, index: 3 } },
+      { items: null },
+    ]),
+  });
+  assert.equal(malformedLaterTransfersPage.status, "partial");
+  assert.deepEqual(malformedLaterTransfersPage.candidates.map((token) => token.address), [a], "accumulated transfer-page addresses survive malformed pagination");
+
+  const malformedFirstAlchemyPage = await discoverAlchemyTokens(wallet, {
+    alchemyApiKey: "test", request: sequence([{ result: { tokenBalances: null } }]),
+  });
+  assert.equal(malformedFirstAlchemyPage.status, "failed");
+  assert.deepEqual(malformedFirstAlchemyPage.candidates, [], "failure before any valid page has no invented results");
+
+  let partialEmptyAlchemyCalls = 0;
+  const partialEmpty = await discoverBaseTokenCandidates(wallet, {
+    alchemyApiKey: "test",
+    request: async (config) => {
+      if (String(config.url).includes("alchemy")) {
+        partialEmptyAlchemyCalls++;
+        return { data: partialEmptyAlchemyCalls === 1
+          ? { result: { tokenBalances: [], pageKey: "next" } }
+          : { result: { tokenBalances: null } } };
+      }
+      throw Object.assign(new Error("provider unavailable"), { response: { status: 503 } });
+    },
+  });
+  assert.equal(partialEmpty.status, "partial_success", "incomplete indexing is distinct from a complete empty scan");
+  assert.deepEqual(partialEmpty.tokens, []);
 
   // C. Blockscout forwards next_page_params and exhausts the available pages.
   const transferParams: unknown[] = [];
@@ -60,17 +91,42 @@ async function run() {
   assert.equal(transfers.pages, 2);
   assert.deepEqual(transferParams[1], { block_number: 2, index: 3 });
 
+  // C2. A Cloudflare challenge is identified as an edge block, and a valid
+  // response from the same public endpoint restores Blockscout market evidence.
+  let blockscoutRequestUrl = "";
+  const challenged = await discoverBlockscoutBalances(wallet, {
+    request: async (config) => {
+      blockscoutRequestUrl = String(config.url);
+      throw Object.assign(new Error("Request failed with status code 403"), {
+        response: { status: 403, headers: { "cf-mitigated": "challenge" }, data: "<!doctype html><title>Just a moment...</title>" },
+      });
+    },
+  });
+  assert.equal(blockscoutRequestUrl, `https://base.blockscout.com/api/v2/addresses/${wallet}/token-balances`);
+  assert.equal(challenged.status, "failed");
+  assert.equal(challenged.diagnostic, "HTTP 403: Cloudflare challenge blocked the Blockscout API request");
+
+  const recovered = await discoverBlockscoutBalances(wallet, {
+    request: async () => ({ data: [{ token: {
+      type: "ERC-20", address_hash: a, exchange_rate: "0.05", reputation: "ok", volume_24h: "25000",
+    } }] }),
+  });
+  assert.equal(recovered.status, "success");
+  assert.deepEqual(recovered.blockscoutQuotes?.[a], { priceUsd: 0.05, reputation: "ok", volume24h: 25_000 });
+
   // D/E. A successful source survives failures; total failure is a 503, never empty 200.
   const partial = await discoverBaseTokenCandidates(wallet, {
-    alchemyApiKey: "test", moralisApiKey: "test",
+    alchemyApiKey: "test",
     request: async (config) => {
       if (String(config.url).includes("alchemy")) throw Object.assign(new Error("500"), { response: { status: 500 } });
-      if (String(config.url).includes("moralis")) return { data: { result: [{ token_address: a }] } };
+      if (String(config.url).includes("/erc20/transfers")) throw Object.assign(new Error("403"), { response: { status: 403 } });
+      if (String(config.url).includes("token-balances")) return { data: [{ token: { type: "ERC-20", address_hash: a } }] };
       throw Object.assign(new Error("500"), { response: { status: 500 } });
     },
   });
   assert.equal(partial.status, "partial_success");
   assert.equal(partial.tokens[0]?.address, a);
+  assert.equal(partial.discovery.sources.find((source) => source.source === "alchemy-transfers")?.status, "failed");
 
   // A capped provider still supplies usable candidates, even if every fully
   // completed fallback provider fails.
@@ -112,7 +168,7 @@ async function run() {
   assert.equal(discoveryHttpStatus(timedOutWithoutCandidates), 503);
 
   const unavailable = await discoverBaseTokenCandidates(wallet, {
-    alchemyApiKey: "test", moralisApiKey: "test", request: sequence([new Error("failure")]),
+    alchemyApiKey: "test", request: sequence([new Error("failure")]),
   });
   assert.equal(unavailable.status, "discovery_unavailable");
   assert.equal(discoveryHttpStatus(unavailable), 503);
@@ -120,11 +176,12 @@ async function run() {
   // F. Provenance is retained when sources report the same contract.
   const merged = mergeDiscoveryCandidates([
     { source: "alchemy", status: "success", pages: 1, candidates: [{ address: c, sources: ["alchemy"] }] },
-    { source: "moralis", status: "success", pages: 1, candidates: [{ address: c.toUpperCase().replace("0X", "0x"), sources: ["moralis"] }] },
+    { source: "alchemy-transfers", status: "success", pages: 1, candidates: [{ address: c.toUpperCase().replace("0X", "0x"), sources: ["alchemy-transfers"] }] },
     { source: "blockscout-balances", status: "success", pages: 1, candidates: [{ address: c, sources: ["blockscout-balances"] }] },
+    { source: "alchemy", status: "success", pages: 1, candidates: [{ address: "not-an-address", sources: ["alchemy"] }, { address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", sources: ["alchemy"] }] },
   ]);
   assert.equal(merged.length, 1);
-  assert.deepEqual(new Set(merged[0].sources), new Set(["alchemy", "moralis", "blockscout-balances"]));
+  assert.deepEqual(new Set(merged[0].sources), new Set(["alchemy", "alchemy-transfers", "blockscout-balances"]));
 
   // G. Provider balances are intentionally absent: only RPC-derived balances can filter candidates.
   const rpcBalances = [0n, 1n]; // provider-reported values are never supplied to this calculation
@@ -142,6 +199,21 @@ async function run() {
   assert.equal(empty.status, "success");
   assert.equal(empty.tokens.length, 0);
   assert.equal(discoveryHttpStatus(empty), 200);
+
+  // A failed provider plus an empty successful provider is unavailable, not a
+  // misleading successful empty scan. Partial success requires usable candidates.
+  const emptyAfterFailure = await discoverBaseTokenCandidates(wallet, {
+    alchemyApiKey: "test",
+    request: async (config) => {
+      if (String(config.url).includes("alchemy")) {
+        throw Object.assign(new Error("provider unavailable"), { response: { status: 503 } });
+      }
+      return { data: { items: [] } };
+    },
+  });
+  assert.equal(emptyAfterFailure.status, "discovery_unavailable");
+  assert.equal(emptyAfterFailure.tokens.length, 0);
+  assert.equal(discoveryHttpStatus(emptyAfterFailure), 503);
   console.log("token discovery tests passed");
 }
 

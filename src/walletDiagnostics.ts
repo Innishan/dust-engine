@@ -10,7 +10,8 @@ export type WalletDiagnosticState = {
   environment: "farcaster-mini-app" | "normal-web";
 };
 
-export const walletDiagnosticsEnabled = import.meta.env.VITE_WALLET_DIAGNOSTICS === "true";
+export const walletDiagnosticsEnabled = import.meta.env.DEV
+  && import.meta.env.VITE_WALLET_DIAGNOSTICS === "true";
 
 export function logWalletDiagnostic(event: string, state: WalletDiagnosticState, extra: Record<string, unknown> = {}) {
   if (!walletDiagnosticsEnabled) return;
