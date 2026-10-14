@@ -4,6 +4,8 @@ import {
   discoverAlchemyTokens,
   discoverBaseTokenCandidates,
   discoverBlockscoutBalances,
+  blockscoutLogosFromBalanceItems,
+  diagnoseBlockscoutLogoItems,
   discoverBlockscoutTransfers,
   discoveryHttpStatus,
   mergeDiscoveryCandidates,
@@ -108,11 +110,35 @@ async function run() {
 
   const recovered = await discoverBlockscoutBalances(wallet, {
     request: async () => ({ data: [{ token: {
-      type: "ERC-20", address_hash: a, exchange_rate: "0.05", reputation: "ok", volume_24h: "25000",
+      type: "ERC-20", address_hash: a, exchange_rate: "0.05", reputation: "ok", volume_24h: "25000", icon_url: "https://assets.example/token.png",
     } }] }),
   });
   assert.equal(recovered.status, "success");
   assert.deepEqual(recovered.blockscoutQuotes?.[a], { priceUsd: 0.05, reputation: "ok", volume24h: 25_000 });
+  assert.deepEqual(recovered.blockscoutLogos, { [a]: "https://assets.example/token.png" });
+  assert.deepEqual(blockscoutLogosFromBalanceItems([
+    { token: { type: "ERC-20", address_hash: b, icon_url: "javascript:alert(1)" } },
+    { token: { type: "ERC-20", address_hash: "bad", icon_url: "https://assets.example/bad.png" } },
+  ]), {});
+  assert.deepEqual(diagnoseBlockscoutLogoItems([
+    { token: { type: "ERC-20", address_hash: a } },
+    { token: { type: "ERC-20", address: b, logo_url: "https://assets.example/icon.png" } },
+  ]), {
+    itemCount: 2,
+    tokenObjectCount: 2,
+    addressHashFieldCount: 1,
+    addressFieldCount: 1,
+    iconUrlFieldCount: 0,
+    logoUrlFieldCount: 1,
+    usableIconUrlCount: 0,
+  }, "diagnostics report Blockscout property names and distinguish a missing icon_url from malformed values");
+
+  const discoveryWithLogo = await discoverBaseTokenCandidates(wallet, {
+    request: async (config) => String(config.url).includes("token-balances")
+      ? { data: [{ token: { type: "ERC-20", address_hash: a, icon_url: "https://assets.example/base-token.png" } }] }
+      : { data: { items: [] } },
+  });
+  assert.equal(discoveryWithLogo.tokens.find((token) => token.address.toLowerCase() === a)?.logoURI, "https://assets.example/base-token.png", "Blockscout logo metadata survives candidate merging into the API response shape");
 
   // D/E. A successful source survives failures; total failure is a 503, never empty 200.
   const partial = await discoverBaseTokenCandidates(wallet, {

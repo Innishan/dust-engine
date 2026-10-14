@@ -66,6 +66,8 @@ import { twMerge } from "tailwind-merge";
 import { getRoutes, getStepTransaction } from "@lifi/sdk";
 import { sdk } from "@farcaster/miniapp-sdk";
 import { BridgePanel } from "./bridge/BridgePanel";
+import { mergeTokenLogoURI, resolveTokenLogoURI, TokenLogo, tokenLogoKey, usableTokenLogoUrl } from "./tokenLogo";
+import { getSupportedTokenLogoMap } from "./bridge/lifi";
 import AchievementsPanel from "./achievements/AchievementsPanel";
 import AmbassadorPanel from "./ambassador/AmbassadorPanel";
 import LegalPages from "./LegalPages";
@@ -416,6 +418,7 @@ const Gear = ({
 interface TokenInfo {
   symbol: string;
   address: Address;
+  logoURI?: string;
   decimals: number;
   balance: bigint;
   formattedBalance: string;
@@ -1070,6 +1073,8 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       addLog("INITIATING AGGRESSIVE SCAN...");
       let discoveredTokens: any[] = [];
       let blockscoutQuotes: Record<string, BlockscoutQuote> | undefined;
+      const discoveredLogos: Record<string, string> = {};
+      let lifiLogoPromise: Promise<Record<string, string>> | undefined;
       let discoveryIncomplete = false;
       const targetScanAddresses = [
         "0x696f9436b67233384889472cd7cd58a6fb5df4f1",
@@ -1114,6 +1119,32 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
         console.log("TOKEN COUNT:", backendRes.data?.tokens?.length);
 
         const discoveryTokens = Array.isArray(backendRes.data?.tokens) ? backendRes.data.tokens : [];
+        const providerLogos = backendRes.data?.blockscoutLogos && typeof backendRes.data.blockscoutLogos === "object"
+          ? backendRes.data.blockscoutLogos as Record<string, unknown>
+          : undefined;
+        let discoveredLogoCount = 0;
+        for (const token of discoveryTokens) {
+          if (typeof token?.address !== "string") continue;
+          const logoURI = resolveTokenLogoURI(base.id, token.address, token.logoURI, providerLogos);
+          if (logoURI) {
+            discoveredLogos[tokenLogoKey(base.id, token.address)] = logoURI;
+            discoveredLogoCount += 1;
+          }
+        }
+        if (discoveredLogoCount < discoveryTokens.length) {
+          lifiLogoPromise = getSupportedTokenLogoMap(base.id).catch((error) => {
+            if (import.meta.env.DEV) console.info("[Token logos] LI.FI metadata unavailable", { chainId: base.id, errorType: error instanceof Error ? error.name : "unknown" });
+            return {};
+          });
+        }
+        if (import.meta.env.DEV) {
+          console.info("[Token logos] Blockscout discovery", {
+            chainId: base.id,
+            discoveredTokenCount: discoveryTokens.length,
+            usableLogoCount: discoveredLogoCount,
+            addressMapEntryCount: providerLogos ? Object.keys(providerLogos).length : 0,
+          });
+        }
         for (const targetAddress of targetScanAddresses) {
           const target = targetScanStages.get(targetAddress)!;
           target.discoveryStatus = typeof backendRes.data?.status === "string" ? backendRes.data.status : "missing_status";
@@ -1152,7 +1183,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
             ...discoveredTokens,
             // Discovery providers supply addresses only. The existing Base RPC
             // multicall below remains the sole source of wallet balances.
-            ...backendRes.data.tokens.map((t: any) => ({ address: t.address, source: t.sources?.join(",") })),
+            ...backendRes.data.tokens.map((t: any) => ({ address: t.address, logoURI: t.logoURI, source: t.sources?.join(",") })),
           ];
           addLog(`BACKEND: DISCOVERED ${backendRes.data.tokens.length} ASSETS`);
           if (discoveryIncomplete) addLog("DISCOVERY PARTIAL: SOME PROVIDERS FAILED OR REACHED A CAP");
@@ -1231,6 +1262,7 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
             existing.symbol && existing.symbol !== "???"
               ? existing.symbol
               : candidate.symbol || existing.symbol,
+          logoURI: mergeTokenLogoURI(existing.logoURI, candidate.logoURI),
           name: existing.name || candidate.name,
           decimals: existing.decimals ?? candidate.decimals,
           balance:
@@ -1481,9 +1513,17 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
           target.decimals = metadata?.decimals ?? null;
         }
         if (!metadata) return;
-        tokensWithMetadata.push({ ...token, ...metadata });
+        const logoURI = discoveredLogos[tokenLogoKey(base.id, token.address)];
+        tokensWithMetadata.push({ ...token, ...metadata, ...(logoURI ? { logoURI } : {}) });
         balancesWithMetadata.push(balancesForTokens[index]);
       });
+      if (import.meta.env.DEV) {
+        console.info("[Token logos] Blockscout positive balances", {
+          chainId: base.id,
+          positiveBalanceTokenCount: tokensWithBalance.length,
+          matchedLogoCount: tokensWithMetadata.filter((token) => usableTokenLogoUrl(token.logoURI)).length,
+        });
+      }
       for (const targetAddress of targetScanAddresses) {
         const target = targetScanStages.get(targetAddress)!;
         if (!target.positiveBalance) target.metadataStatus = "not_requested_without_positive_balance";
@@ -1981,6 +2021,26 @@ function EngineCore({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
       });
 
       setTokens(results);
+      if (lifiLogoPromise) {
+        void lifiLogoPromise.then((lifiLogos) => {
+          setTokens((current) => {
+            const updated = current.map((token) => {
+              if (usableTokenLogoUrl(token.logoURI)) return token;
+              const logoURI = lifiLogos[tokenLogoKey(base.id, token.address)];
+              return logoURI ? { ...token, logoURI } : token;
+            });
+            if (import.meta.env.DEV) {
+              console.info("[Token logos] Dust rows", {
+                chainId: base.id,
+                positiveBalanceTokenCount: updated.length,
+                matchedLogoCount: updated.filter((token) => usableTokenLogoUrl(token.logoURI)).length,
+                source: "Blockscout plus LI.FI address metadata",
+              });
+            }
+            return updated;
+          });
+        });
+      }
       addLog(discoveryIncomplete
         ? `SCAN PARTIAL: FOUND ${results.length} ASSETS`
         : `SCAN COMPLETE: FOUND ${results.length} ASSETS`);
@@ -2525,7 +2585,8 @@ function TokenRow({
       </div>
 
       <div className="flex-1 min-w-0 overflow-hidden w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <TokenLogo chainId={8453} address={token.address} logoURI={token.logoURI} size="sm" />
           <span className="font-bold text-zinc-100 truncate">
             {token.symbol}
           </span>

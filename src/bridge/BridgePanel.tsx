@@ -36,6 +36,7 @@ import {
   getSupportedTokens,
 } from "./lifi";
 import { getWalletErrorDetails, logWalletDiagnostic } from "../walletDiagnostics";
+import { TokenLogo } from "../tokenLogo";
 
 type TokenSelectorProps = {
   address?: Address;
@@ -152,32 +153,8 @@ function isUsableBridgeToken(token: Token, chainId: number) {
   );
 }
 
-function tokenInitials(token: Token) {
-  return token.symbol.trim().slice(0, 2).toUpperCase();
-}
-
 function TokenAvatar({ token, size = "md" }: { token: Token; size?: "sm" | "md" }) {
-  const [hasImageError, setHasImageError] = useState(false);
-  const logoUri = token.logoURI?.trim();
-  const hasLogo = Boolean(logoUri && /^https?:\/\//i.test(logoUri) && !hasImageError);
-  const sizeClass = size === "sm" ? "h-9 w-9 text-[10px]" : "h-11 w-11 text-xs";
-
-  if (hasLogo) {
-    return (
-      <img
-        src={logoUri}
-        alt=""
-        onError={() => setHasImageError(true)}
-        className={`${sizeClass} shrink-0 rounded-full border border-zinc-700/80 bg-zinc-900 object-cover`}
-      />
-    );
-  }
-
-  return (
-    <span className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/10 font-mono font-bold text-emerald-300`}>
-      {tokenInitials(token)}
-    </span>
-  );
+  return <TokenLogo chainId={token.chainId} address={token.address} logoURI={token.logoURI} size={size} />;
 }
 
 function formatWalletBalance(balance: bigint | undefined, token: Token) {

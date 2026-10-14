@@ -6,6 +6,7 @@ export type DiscoveryStatus = "success" | "partial" | "failed" | "timeout" | "ca
 export type DiscoveryCandidate = {
   address: string;
   sources: DiscoverySource[];
+  logoURI?: string;
 };
 
 export type ProviderResult = {
@@ -15,6 +16,8 @@ export type ProviderResult = {
   pages: number;
   diagnostic?: string;
   blockscoutQuotes?: Record<string, BlockscoutQuote>;
+  blockscoutLogos?: Record<string, string>;
+  blockscoutLogoDiagnostics?: BlockscoutLogoDiagnostics;
 };
 
 export type BlockscoutQuote = {
@@ -23,11 +26,22 @@ export type BlockscoutQuote = {
   volume24h?: number;
 };
 
+export type BlockscoutLogoDiagnostics = {
+  itemCount: number;
+  tokenObjectCount: number;
+  addressHashFieldCount: number;
+  addressFieldCount: number;
+  iconUrlFieldCount: number;
+  logoUrlFieldCount: number;
+  usableIconUrlCount: number;
+};
+
 export type DiscoveryResponse = {
   status: "success" | "partial_success" | "discovery_unavailable";
   tokens: DiscoveryCandidate[];
   discovery: { sources: ProviderResult[] };
   blockscoutQuotes?: Record<string, BlockscoutQuote>;
+  blockscoutLogos?: Record<string, string>;
 };
 
 export function discoveryHttpStatus(response: Pick<DiscoveryResponse, "status">): 200 | 503 {
@@ -89,6 +103,41 @@ export function blockscoutQuotesFromBalanceItems(items: unknown[]): Record<strin
     };
   }
   return quotes;
+}
+
+export function blockscoutLogosFromBalanceItems(items: unknown[]): Record<string, string> {
+  const logos: Record<string, string> = {};
+  for (const item of items as Array<{ token?: { type?: unknown; address_hash?: unknown; icon_url?: unknown } }>) {
+    const token = item?.token;
+    if (token?.type !== "ERC-20" || !isValidTokenAddress(token.address_hash)) continue;
+    if (typeof token.icon_url === "string" && /^https?:\/\//i.test(token.icon_url.trim())) {
+      logos[token.address_hash.toLowerCase()] = token.icon_url.trim();
+    }
+  }
+  return logos;
+}
+
+export function diagnoseBlockscoutLogoItems(items: unknown[]): BlockscoutLogoDiagnostics {
+  const diagnostics: BlockscoutLogoDiagnostics = {
+    itemCount: items.length,
+    tokenObjectCount: 0,
+    addressHashFieldCount: 0,
+    addressFieldCount: 0,
+    iconUrlFieldCount: 0,
+    logoUrlFieldCount: 0,
+    usableIconUrlCount: 0,
+  };
+  for (const item of items as Array<{ token?: unknown }>) {
+    if (!item?.token || typeof item.token !== "object" || Array.isArray(item.token)) continue;
+    diagnostics.tokenObjectCount += 1;
+    const token = item.token as Record<string, unknown>;
+    if (Object.hasOwn(token, "address_hash")) diagnostics.addressHashFieldCount += 1;
+    if (Object.hasOwn(token, "address")) diagnostics.addressFieldCount += 1;
+    if (Object.hasOwn(token, "icon_url")) diagnostics.iconUrlFieldCount += 1;
+    if (Object.hasOwn(token, "logo_url")) diagnostics.logoUrlFieldCount += 1;
+    if (typeof token.icon_url === "string" && /^https?:\/\//i.test(token.icon_url.trim())) diagnostics.usableIconUrlCount += 1;
+  }
+  return diagnostics;
 }
 
 function candidatesFromAddresses(addresses: unknown[], source: DiscoverySource): DiscoveryCandidate[] {
@@ -238,6 +287,8 @@ export async function discoverBlockscoutBalances(address: string, config: TokenD
       pages: 1,
       ...(candidates.length >= opt.maxCandidates ? { diagnostic: "candidate cap reached" } : {}),
       blockscoutQuotes: blockscoutQuotesFromBalanceItems(items),
+      blockscoutLogos: blockscoutLogosFromBalanceItems(items),
+      blockscoutLogoDiagnostics: diagnoseBlockscoutLogoItems(items),
     };
   } catch (error) {
     return { source, status: errorStatus(error), candidates: [], pages: 0, diagnostic: diagnostic(error) };
@@ -297,5 +348,10 @@ export async function discoverBaseTokenCandidates(address: string, config: Token
     ? "success"
     : usable.length > 0 || incomplete ? "partial_success" : "discovery_unavailable";
   const blockscoutQuotes = results.find((result) => result.source === "blockscout-balances")?.blockscoutQuotes;
-  return { status, tokens: mergeDiscoveryCandidates(results), discovery: { sources: results }, ...(blockscoutQuotes ? { blockscoutQuotes } : {}) };
+  const blockscoutLogos = results.find((result) => result.source === "blockscout-balances")?.blockscoutLogos;
+  const tokens = mergeDiscoveryCandidates(results).map((candidate) => ({
+    ...candidate,
+    ...(blockscoutLogos?.[candidate.address.toLowerCase()] ? { logoURI: blockscoutLogos[candidate.address.toLowerCase()] } : {}),
+  }));
+  return { status, tokens, discovery: { sources: results }, ...(blockscoutQuotes ? { blockscoutQuotes } : {}), ...(blockscoutLogos ? { blockscoutLogos } : {}) };
 }

@@ -11,6 +11,7 @@ import {
   type ExtendedChain,
   type Token,
 } from "@lifi/sdk";
+import { tokenLogoMapFromMetadata } from "../tokenLogo";
 import {
   createClient,
   createPublicClient,
@@ -46,6 +47,7 @@ const ERC20_BALANCE_ABI = [
 ] as const;
 
 let isConfigured = false;
+const tokenLogoMaps = new Map<number, Promise<Record<string, string>>>();
 
 function ensureBridgeLiFiConfig() {
   if (isConfigured) {
@@ -175,6 +177,22 @@ export async function getSupportedTokens(
   });
 
   return response.tokens[chainId] ?? [];
+}
+
+/** Fetch LI.FI token logos once per chain for optional UI decoration. */
+export function getSupportedTokenLogoMap(chainId: number): Promise<Record<string, string>> {
+  const cached = tokenLogoMaps.get(chainId);
+  if (cached) return cached;
+
+  ensureBridgeLiFiConfig();
+  const request = getTokens({ chains: [chainId], extended: true })
+    .then((response) => tokenLogoMapFromMetadata(chainId, response.tokens[chainId] ?? []))
+    .catch((error) => {
+      tokenLogoMaps.delete(chainId);
+      throw error;
+    });
+  tokenLogoMaps.set(chainId, request);
+  return request;
 }
 
 export async function getSupportedConnections(

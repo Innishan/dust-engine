@@ -879,6 +879,22 @@ async function startServer() {
       const discovery = await discoverBaseTokenCandidates(address, {
         alchemyApiKey: process.env.ALCHEMY_API_KEY,
       });
+      if (process.env.NODE_ENV === "development") {
+        const blockscout = discovery.discovery.sources.find((source) => source.source === "blockscout-balances");
+        console.info("[Token logos] Blockscout response fields", {
+          status: blockscout?.status ?? "missing",
+          ...(blockscout?.blockscoutLogoDiagnostics ?? {
+            itemCount: 0,
+            tokenObjectCount: 0,
+            addressHashFieldCount: 0,
+            addressFieldCount: 0,
+            iconUrlFieldCount: 0,
+            logoUrlFieldCount: 0,
+            usableIconUrlCount: 0,
+          }),
+          emittedLogoMapEntries: Object.keys(blockscout?.blockscoutLogos ?? {}).length,
+        });
+      }
       return res.status(discoveryHttpStatus(discovery)).json(discovery);
     } catch (error: any) {
       console.error("Critical backend scan failure:", error instanceof Error ? error.name : "unknown_error");
