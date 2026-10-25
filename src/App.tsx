@@ -1091,6 +1091,15 @@ function DustGenesisCampaign() {
             : null;
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-7 bg-zinc-950 px-5 py-8 text-zinc-100">
+      <div className="w-full max-w-md">
+        <a
+          href="/"
+          className="inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-3 py-2 text-sm font-semibold text-zinc-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300"
+        >
+          <span aria-hidden="true">←</span>
+          Back to Dashboard
+        </a>
+      </div>
       <img src="/dust-genesis.png" alt="Dust Genesis NFT artwork" className="h-auto w-full max-w-md rounded-2xl object-contain" />
       <nav className="flex w-full max-w-md flex-col items-center gap-4 text-center">
         {(campaign?.tasks ?? [
