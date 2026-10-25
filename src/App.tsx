@@ -540,7 +540,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
 
   if (window.location.pathname === "/genesis") {
     return (
-      <WagmiProvider config={config}>
+      <WagmiProvider config={config} reconnectOnMount={false}>
         <QueryClientProvider client={queryClient}>
           <ConnectKitProvider>
             <DustGenesisCampaign />
@@ -656,6 +656,12 @@ type DustGenesisMintAuthorization = {
   expiry: number;
   signature: `0x${string}`;
 };
+type DustGenesisProgress = {
+  profileStarted: boolean;
+  profileComplete: boolean;
+  announcementStarted: boolean;
+  announcementComplete: boolean;
+};
 
 function isObject(value: unknown): value is object {
   return typeof value === "object" && value !== null;
@@ -725,14 +731,21 @@ function DustGenesisCampaign() {
   const [campaign, setCampaign] = useState<DustGenesisCampaignConfig | null>(null);
   const [campaignTimestamp, setCampaignTimestamp] = useState(0);
   const [session, setSession] = useState<{ token: string; wallet: string; expiresAt: number } | null>(null);
-  const [progress, setProgress] = useState({ profileComplete: false, announcementComplete: false });
+  const [progress, setProgress] = useState<DustGenesisProgress>({
+    profileStarted: false,
+    profileComplete: false,
+    announcementStarted: false,
+    announcementComplete: false,
+  });
   const [startedTasks, setStartedTasks] = useState<Array<"profile" | "announcement">>([]);
   const [startingTask, setStartingTask] = useState<"profile" | "announcement" | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
-  const taskOperationRef = useRef<{ wallet: string; generation: number } | null>(null);
-  const progressRequestRef = useRef<{ key: string; promise: Promise<{ profileComplete: boolean; announcementComplete: boolean }> } | null>(null);
+  const taskOperationRef = useRef<number | null>(null);
+  const taskOperationGenerationRef = useRef(0);
+  const progressRequestRef = useRef<{ key: string; promise: Promise<DustGenesisProgress> } | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [transactionPending, setTransactionPending] = useState(false);
+  const [claimProgressMessage, setClaimProgressMessage] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -775,14 +788,16 @@ function DustGenesisCampaign() {
     liveWalletRef.current = nextWallet;
     walletGenerationRef.current += 1;
     setSession(null);
-    setProgress({ profileComplete: false, announcementComplete: false });
+    setProgress({ profileStarted: false, profileComplete: false, announcementStarted: false, announcementComplete: false });
     setStartedTasks([]);
     setStartingTask(null);
     setTaskError(null);
+    taskOperationGenerationRef.current += 1;
     taskOperationRef.current = null;
     progressRequestRef.current = null;
     setClaiming(false);
     setTransactionPending(false);
+    setClaimProgressMessage(null);
     setClaimError(null);
     setShowSuccess(false);
   }, [address]);
@@ -823,27 +838,38 @@ function DustGenesisCampaign() {
     return nextSession.token;
   };
 
-  const updateProgress = (token: string, operation: WalletOperation) => {
-    requireCurrentWalletOperation(operation);
-    const requestKey = `${operation.wallet}:${operation.generation}:${token}`;
+  const updateProgress = (operation?: WalletOperation, token?: string) => {
+    if (operation) requireCurrentWalletOperation(operation);
+    const requestGeneration = operation?.generation ?? walletGenerationRef.current;
+    const requestKey = `${operation?.wallet ?? "anonymous"}:${requestGeneration}:${token ?? ""}`;
     if (progressRequestRef.current?.key === requestKey) return progressRequestRef.current.promise;
     const promise = (async () => {
       try {
-        const response = await axios.post("/api/dust-genesis/progress", {}, {
+        const response = await axios.post<DustGenesisProgress>("/api/dust-genesis/progress", {}, token ? {
           headers: { Authorization: `Bearer ${token}` },
-        });
-        requireCurrentWalletOperation(operation);
-        const nextProgress = {
+        } : undefined);
+        if (operation) requireCurrentWalletOperation(operation);
+        else if (!mountedRef.current || requestGeneration !== walletGenerationRef.current) throw new Error("task_progress_stale");
+        const nextProgress: DustGenesisProgress = {
+          profileStarted: Boolean(response.data.profileStarted),
           profileComplete: Boolean(response.data.profileComplete),
+          announcementStarted: Boolean(response.data.announcementStarted),
           announcementComplete: Boolean(response.data.announcementComplete),
         };
-        setProgress((current) => current.profileComplete === nextProgress.profileComplete
+        setProgress((current) => current.profileStarted === nextProgress.profileStarted
+          && current.profileComplete === nextProgress.profileComplete
+          && current.announcementStarted === nextProgress.announcementStarted
           && current.announcementComplete === nextProgress.announcementComplete ? current : nextProgress);
+        setStartedTasks([
+          ...(nextProgress.profileStarted ? ["profile" as const] : []),
+          ...(nextProgress.announcementStarted ? ["announcement" as const] : []),
+        ]);
         setTaskError((current) => current?.startsWith("Task status could not be checked") ? null : current);
         return nextProgress;
       } catch (error) {
-        if (isCurrentWalletOperation(operation)) {
+        if (operation ? isCurrentWalletOperation(operation) : mountedRef.current && requestGeneration === walletGenerationRef.current) {
           if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+          setProgress((current) => ({ ...current, profileComplete: false, announcementComplete: false }));
           setTaskError("Task status could not be checked. Please try again.");
         }
         throw error;
@@ -859,21 +885,19 @@ function DustGenesisCampaign() {
   };
 
   useEffect(() => {
-    if (!session || session.wallet !== address?.toLowerCase() || !address) return;
-    const operation = captureWalletOperation(address);
-    void updateProgress(session.token, operation).catch(() => undefined);
-  }, [address, session]);
+    void updateProgress().catch(() => undefined);
+  }, [address]);
 
   useEffect(() => {
-    if (!session || session.wallet !== address?.toLowerCase() || startedTasks.length === 0 || !address) return;
+    if (startedTasks.length === 0) return;
     const hasPendingStartedTask = startedTasks.some((task) =>
       task === "profile" ? !progress.profileComplete : !progress.announcementComplete,
     );
     if (!hasPendingStartedTask) return;
-    const operation = captureWalletOperation(address);
+    const generation = walletGenerationRef.current;
     const refresh = () => {
-      if (document.visibilityState === "hidden" || !isCurrentWalletOperation(operation)) return;
-      void updateProgress(session.token, operation).catch(() => undefined);
+      if (document.visibilityState === "hidden" || !mountedRef.current || generation !== walletGenerationRef.current) return;
+      void updateProgress().catch(() => undefined);
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
@@ -886,7 +910,7 @@ function DustGenesisCampaign() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(interval);
     };
-  }, [address, session, startedTasks, progress]);
+  }, [address, startedTasks, progress]);
 
   const openTask = async (
     event: MouseEvent<HTMLAnchorElement>,
@@ -897,41 +921,37 @@ function DustGenesisCampaign() {
       return;
     }
     event.preventDefault();
-    if (!isConnected || !address) {
-      setOpen(true);
-      return;
-    }
     if (taskOperationRef.current) return;
     if (task.id === "announcement" && !progress.profileComplete) {
       return;
     }
-    const operation = captureWalletOperation(address);
+    const operation = ++taskOperationGenerationRef.current;
+    const walletGeneration = walletGenerationRef.current;
     const popup = window.open("about:blank", "_blank");
     if (popup) popup.opener = null;
     taskOperationRef.current = operation;
     setStartingTask(task.id);
     setTaskError(null);
     try {
-      const token = await ensureWalletSession(operation);
-      requireCurrentWalletOperation(operation);
-      await axios.post(`/api/dust-genesis/tasks/${task.id}/start`, {}, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      requireCurrentWalletOperation(operation);
+      await axios.post(`/api/dust-genesis/tasks/${task.id}/start`, {});
+      if (!mountedRef.current || taskOperationRef.current !== operation
+        || taskOperationGenerationRef.current !== operation || walletGenerationRef.current !== walletGeneration) {
+        popup?.close();
+        return;
+      }
       setStartedTasks((current) => current.includes(task.id) ? current : [...current, task.id]);
       if (popup) popup.location.replace(task.url);
-      void updateProgress(token, operation).catch(() => undefined);
+      void updateProgress().catch(() => undefined);
       if (!popup) setTaskError("Your browser blocked the X tab. Allow pop-ups and select the task link again.");
     } catch (error) {
       popup?.close();
-      if (!isCurrentWalletOperation(operation)) return;
-      if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
-      if (!session) setOpen(true);
+      if (!mountedRef.current || taskOperationRef.current !== operation
+        || taskOperationGenerationRef.current !== operation || walletGenerationRef.current !== walletGeneration) return;
       setTaskError("The task could not be started. Please try again.");
     } finally {
       if (taskOperationRef.current === operation) {
         taskOperationRef.current = null;
-        if (isCurrentWalletOperation(operation)) setStartingTask(null);
+        if (mountedRef.current && taskOperationGenerationRef.current === operation) setStartingTask(null);
       }
     }
   };
@@ -952,6 +972,7 @@ function DustGenesisCampaign() {
 
   const claimNft = async () => {
     setClaimError(null);
+    setClaimProgressMessage(null);
     if (!isConnected || !address) {
       setClaimError("Wallet connection was not completed. Connect a wallet, then retry Claim NFT.");
       setOpen(true);
@@ -961,18 +982,27 @@ function DustGenesisCampaign() {
     const operation = captureWalletOperation(address);
     let stage: DustGenesisClaimStage = "network";
     setClaiming(true);
+    setClaimProgressMessage("Preparing your claim. Approve the Base network and wallet verification prompts when asked.");
     try {
       if (chainId !== base.id) await switchChainAsync({ chainId: base.id });
       requireCurrentWalletOperation(operation);
       stage = "session";
+      setClaimProgressMessage("Verify wallet ownership in your wallet to continue.");
       const token = await ensureWalletSession(operation);
       stage = "progress";
-      const currentProgress = await updateProgress(token, operation);
+      setClaimProgressMessage("Checking the task steps and campaign eligibility.");
+      const currentProgress = await updateProgress(operation, token);
       if (!currentProgress.profileComplete || !currentProgress.announcementComplete) {
         setClaimError("The task steps are not yet complete. Wait for their status to update, then retry Claim NFT.");
         return;
       }
       stage = "authorization";
+      setClaimProgressMessage("Securing the completed task session to this wallet.");
+      await axios.post("/api/dust-genesis/tasks/bind", {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      requireCurrentWalletOperation(operation);
+      setClaimProgressMessage("Requesting the mint authorization.");
       const { data: authorization } = await axios.post<DustGenesisMintAuthorization>("/api/dust-genesis/authorization", {}, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -985,6 +1015,7 @@ function DustGenesisCampaign() {
 
       requireCurrentWalletOperation(operation);
       stage = "submission";
+      setClaimProgressMessage("Confirm the free mint in your wallet.");
       const hash = await writeContractAsync({
         address: campaign.contractAddress,
         abi: DUST_GENESIS_ABI,
@@ -997,6 +1028,7 @@ function DustGenesisCampaign() {
       requireCurrentWalletOperation(operation);
       setTransactionPending(true);
       stage = "receipt";
+      setClaimProgressMessage("Waiting for Base to confirm the mint.");
       let receipt;
       try {
         receipt = await publicClient!.waitForTransactionReceipt({ hash, confirmations: 1 });
@@ -1017,16 +1049,19 @@ function DustGenesisCampaign() {
         return;
       }
       setClaimError(null);
+      setClaimProgressMessage(null);
       setShowSuccess(true);
     } catch (error) {
       // Only expose safe, user-facing diagnostics; never show raw provider or server errors.
       if (!isCurrentWalletOperation(operation)) return;
       if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+      setClaimProgressMessage(null);
       setClaimError(dustGenesisClaimErrorMessage(error, stage));
     } finally {
       if (isCurrentWalletOperation(operation)) {
         setTransactionPending(false);
         setClaiming(false);
+        setClaimProgressMessage(null);
       }
     }
   };
@@ -1043,6 +1078,17 @@ function DustGenesisCampaign() {
     && campaignTimestamp >= campaign.campaignStartTimestamp
     && campaignTimestamp < campaign.campaignDeadline);
   const claimDisabled = claiming || !tasksComplete || !campaign?.contractAddress || !campaignActive;
+  const inactiveCampaignReason = !campaign
+    ? "Campaign availability could not be checked yet."
+    : !campaign.contractAddress
+      ? "Claiming is not configured yet."
+      : !campaign.campaignStartTimestamp
+        ? "The Dust Genesis campaign has not been activated yet."
+        : campaignTimestamp < campaign.campaignStartTimestamp
+          ? "The Dust Genesis campaign is not active yet."
+          : campaignTimestamp >= campaign.campaignDeadline
+            ? "The Dust Genesis campaign has ended."
+            : null;
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-7 bg-zinc-950 px-5 py-8 text-zinc-100">
       <img src="/dust-genesis.png" alt="Dust Genesis NFT artwork" className="h-auto w-full max-w-md rounded-2xl object-contain" />
@@ -1055,20 +1101,26 @@ function DustGenesisCampaign() {
             const locked = task.id === "announcement" && !progress.profileComplete;
             const busy = startingTask === task.id;
             const unavailable = !task.url || locked || busy;
+            const className = `text-sm underline underline-offset-4 ${unavailable ? "cursor-not-allowed text-zinc-500" : "text-zinc-200 hover:text-white"}`;
+            const label = task.id === "profile" ? "Follow the official Dust Engine X profile" : task.label;
+            if (unavailable) {
+              return (
+                <button key={task.id} type="button" disabled aria-busy={busy || undefined} className={className}>
+                  {label}{busy ? " · Opening…" : null}
+                </button>
+              );
+            }
             return (
               <a
                 key={task.id}
-                href={task.url ?? undefined}
+                href={task.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                aria-label={task.id === "profile" ? "Follow the official Dust Engine X profile" : task.label}
-                aria-disabled={unavailable || undefined}
-                aria-busy={busy || undefined}
+                aria-label={label}
                 onClick={(event) => { void openTask(event, task); }}
-                className={`text-sm underline underline-offset-4 ${unavailable ? "cursor-not-allowed text-zinc-500" : "text-zinc-200 hover:text-white"}`}
+                className={className}
               >
-                {task.id === "profile" ? "Follow the official Dust Engine X profile" : task.label}
-                {startingTask === task.id ? " · Opening…" : null}
+                {label}
               </a>
             );
           })()
@@ -1085,6 +1137,12 @@ function DustGenesisCampaign() {
       >
         Claim NFT
       </button>
+      {!campaignActive && inactiveCampaignReason && (
+        <p role="status" aria-live="polite" className="w-full max-w-md text-center text-sm text-zinc-400">
+          {inactiveCampaignReason}
+        </p>
+      )}
+      {claimProgressMessage && <p role="status" aria-live="polite" className="w-full max-w-md text-center text-sm text-zinc-300">{claimProgressMessage}</p>}
       {claimError && (
         <p role="alert" aria-live="assertive" aria-atomic="true" className="w-full max-w-md text-center text-sm text-rose-300">
           {claimError}
