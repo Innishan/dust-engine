@@ -110,7 +110,6 @@ async function startServer() {
     ? createDustGenesisChainEligibility(getAddress(dustGenesisContractAddress))
     : undefined;
   app.use("/api/dust-genesis", createDustGenesisRouter(statsDb, {
-    xProfileUrl: process.env.DUST_GENESIS_X_PROFILE_URL,
     xAnnouncementUrl: process.env.DUST_GENESIS_X_ANNOUNCEMENT_URL,
     contractAddress: dustGenesisContractAddress,
     signerPrivateKey: process.env.DUST_GENESIS_SIGNER_PRIVATE_KEY,

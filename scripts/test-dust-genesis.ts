@@ -4,7 +4,7 @@ import express from "express";
 import Database from "better-sqlite3";
 import { recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { DUST_GENESIS_CAMPAIGN_DURATION_SECONDS, createDustGenesisRouter, initializeDustGenesisTables } from "../server/dustGenesis.js";
+import { DUST_GENESIS_CAMPAIGN_DURATION_SECONDS, DUST_GENESIS_PROFILE_URL, createDustGenesisRouter, initializeDustGenesisTables } from "../server/dustGenesis.js";
 
 const SIGNER_KEY = `0x${"11".repeat(32)}` as Hex;
 const WALLET_A_KEY = `0x${"22".repeat(32)}` as Hex;
@@ -14,7 +14,6 @@ const walletA = privateKeyToAccount(WALLET_A_KEY);
 const walletB = privateKeyToAccount(WALLET_B_KEY);
 const CONTRACT = "0x1111111111111111111111111111111111111111" as Address;
 const testUrls = {
-  profile: "https://x.com/PLACEHOLDER_TEST_PROFILE_DO_NOT_USE",
   announcement: "https://x.com/PLACEHOLDER_TEST_ANNOUNCEMENT_DO_NOT_USE",
 };
 
@@ -30,7 +29,6 @@ let mockedCampaignDeadline = mockedCampaignStartTimestamp + BigInt(DUST_GENESIS_
 const app = express();
 app.use(express.json());
 app.use("/api/dust-genesis", createDustGenesisRouter(db, {
-  xProfileUrl: testUrls.profile,
   xAnnouncementUrl: testUrls.announcement,
   contractAddress: CONTRACT,
   signerPrivateKey: SIGNER_KEY,
@@ -88,11 +86,12 @@ async function authenticate(account: typeof walletA) {
 
 try {
   const config = await fetch(`${api}/config`).then((response) => response.json()) as {
-    tasks: Array<{ url: string | null }>;
+    tasks: Array<{ label: string; url: string | null }>;
     campaignStartTimestamp: number;
     campaignDeadline: number;
   };
-  assert.equal(config.tasks[0].url, testUrls.profile);
+  assert.equal(config.tasks[0].label, "Follow the official Dust Engine X profile");
+  assert.equal(config.tasks[0].url, DUST_GENESIS_PROFILE_URL);
   assert.equal(config.tasks[1].url, testUrls.announcement);
   assert.equal(config.campaignDeadline - config.campaignStartTimestamp, DUST_GENESIS_CAMPAIGN_DURATION_SECONDS);
   for (let index = 0; index < 29; index += 1) {
@@ -128,11 +127,13 @@ try {
   assert.equal((await post("/authorization", {}, authA.token)).status, 403, "mint authorization requires both tasks");
 
   assert.equal((await post("/tasks/profile/start", {}, authA.token)).status, 200);
+  assert.equal((await post("/tasks/announcement/start", {}, authA.token)).status, 403, "announcement stays locked until the profile delay completes");
   now += 5_000;
   assert.equal((await post("/tasks/profile/start", {}, authA.token)).status, 200, "reopening a task cannot reset its start time");
   now += 4_999;
   let progress = await post("/progress", {}, authA.token);
   assert.deepEqual(progress.data, { profileComplete: false, announcementComplete: false }, "server delay cannot be bypassed");
+  assert.equal((await post("/tasks/announcement/start", {}, authA.token)).status, 403, "announcement is still locked at 9.999 seconds");
   now += 1;
   progress = await post("/progress", {}, authA.token);
   assert.equal(progress.data.profileComplete, true, "task completes after server elapsed time");
@@ -140,6 +141,7 @@ try {
 
   now += 100;
   assert.equal((await post("/tasks/announcement/start", {}, authA.token)).status, 200);
+  assert.equal((await post("/tasks/announcement/start", {}, authA.token)).status, 200, "repeated task starts remain safe and idempotent");
   now += 10_000;
   progress = await post("/progress", {}, authA.token);
   assert.deepEqual(progress.data, { profileComplete: true, announcementComplete: true });
@@ -181,6 +183,9 @@ try {
   const dbErrorConfig = await fetch(`http://127.0.0.1:${address.port}/api/dust-genesis-db-error/config`);
   assert.equal(dbErrorConfig.status, 503, "config rate-limit database failures return a controlled service error");
   assert.deepEqual(await dbErrorConfig.json(), { error: "Dust Genesis campaign state could not be checked" });
+  const dbErrorProgress = await postTo(`http://127.0.0.1:${address.port}/api/dust-genesis-db-error`, "/progress", {}, authA.token);
+  assert.equal(dbErrorProgress.status, 503, "progress database failures cannot be mistaken for task completion");
+  assert.deepEqual(dbErrorProgress.data, { error: "Dust Genesis task progress could not be checked" });
 
   mockedHasMinted = true;
   assert.equal((await post("/authorization", {}, authA.token)).status, 403, "claimed wallets cannot receive another authorization");

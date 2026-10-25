@@ -661,6 +661,57 @@ function isObject(value: unknown): value is object {
   return typeof value === "object" && value !== null;
 }
 
+type DustGenesisClaimStage = "network" | "session" | "progress" | "authorization" | "submission" | "receipt";
+
+const SAFE_DUST_GENESIS_API_ERRORS: Record<string, string> = {
+  "Wallet authentication required": "Your wallet session expired. Reconnect or sign the wallet prompt, then try again.",
+  "Invalid wallet address": "The connected wallet address could not be verified. Reconnect your wallet and try again.",
+  "Invalid wallet proof": "Wallet verification failed. Sign the verification prompt again, then retry.",
+  "Wallet proof expired or already used": "Wallet verification expired. Start a new claim attempt to verify again.",
+  "Invalid wallet signature": "Wallet verification failed. Sign the verification prompt again, then retry.",
+  "Invalid request": "The claim request was invalid. Please start a new claim attempt.",
+  "Complete the profile task first": "Complete the profile task before continuing to the announcement task.",
+  "Campaign tasks are incomplete": "The task steps are not yet complete. Wait for their status to update, then retry.",
+  "Dust Genesis task progress could not be checked": "Task completion could not be checked. Check your connection and retry Claim NFT.",
+  "Campaign task URL is not configured": "This campaign task is not available yet. Please try again later.",
+  "Dust Genesis mint authorization is not configured": "Minting is not currently available. Please try again later.",
+  "Wallet is not eligible to mint": "This wallet is not currently eligible to mint. Confirm the campaign is active and the task steps are complete.",
+  "Dust Genesis eligibility could not be checked": "Wallet eligibility could not be checked. Please try again later.",
+  "Dust Genesis campaign state could not be checked": "Campaign status could not be checked. Please try again later.",
+  "Dust Genesis campaign configuration is invalid": "Campaign configuration is unavailable. Please try again later.",
+  "Too many requests": "Too many claim requests were made. Wait a moment, then retry.",
+};
+
+function dustGenesisClaimErrorMessage(error: unknown, stage: DustGenesisClaimStage): string {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && isObject(current); depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (code === 4001 || code === "4001" || code === "ACTION_REJECTED") {
+      return "The wallet request was rejected or cancelled. Retry Claim NFT when you are ready.";
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  if (axios.isAxiosError(error)) {
+    const responseData: unknown = error.response?.data;
+    if (isObject(responseData)) {
+      const serverMessage = (responseData as { error?: unknown }).error;
+      if (typeof serverMessage === "string" && Object.prototype.hasOwnProperty.call(SAFE_DUST_GENESIS_API_ERRORS, serverMessage)) {
+        return SAFE_DUST_GENESIS_API_ERRORS[serverMessage];
+      }
+    }
+  }
+
+  switch (stage) {
+    case "network": return "Could not switch to Base. Select Base in your wallet, then retry Claim NFT.";
+    case "session": return "Wallet verification could not be completed. Reconnect or approve the wallet prompt, then retry.";
+    case "progress": return "Task completion could not be checked. Check your connection and retry Claim NFT.";
+    case "authorization": return "Mint authorization could not be issued. Please retry Claim NFT.";
+    case "submission": return "Your wallet could not submit the mint. Check the Base network and try Claim NFT again.";
+    case "receipt": return "The mint transaction could not be confirmed. Check its status in your wallet before retrying.";
+  }
+}
+
 function DustGenesisCampaign() {
   const { address, isConnected, chainId } = useAccount();
   const { setOpen } = useModal();
@@ -675,8 +726,14 @@ function DustGenesisCampaign() {
   const [campaignTimestamp, setCampaignTimestamp] = useState(0);
   const [session, setSession] = useState<{ token: string; wallet: string; expiresAt: number } | null>(null);
   const [progress, setProgress] = useState({ profileComplete: false, announcementComplete: false });
+  const [startedTasks, setStartedTasks] = useState<Array<"profile" | "announcement">>([]);
+  const [startingTask, setStartingTask] = useState<"profile" | "announcement" | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const taskOperationRef = useRef<{ wallet: string; generation: number } | null>(null);
+  const progressRequestRef = useRef<{ key: string; promise: Promise<{ profileComplete: boolean; announcementComplete: boolean }> } | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [transactionPending, setTransactionPending] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
 
   useEffect(() => {
@@ -719,8 +776,14 @@ function DustGenesisCampaign() {
     walletGenerationRef.current += 1;
     setSession(null);
     setProgress({ profileComplete: false, announcementComplete: false });
+    setStartedTasks([]);
+    setStartingTask(null);
+    setTaskError(null);
+    taskOperationRef.current = null;
+    progressRequestRef.current = null;
     setClaiming(false);
     setTransactionPending(false);
+    setClaimError(null);
     setShowSuccess(false);
   }, [address]);
 
@@ -760,17 +823,39 @@ function DustGenesisCampaign() {
     return nextSession.token;
   };
 
-  const updateProgress = async (token: string, operation: WalletOperation) => {
+  const updateProgress = (token: string, operation: WalletOperation) => {
     requireCurrentWalletOperation(operation);
-    const response = await axios.post("/api/dust-genesis/progress", {}, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    requireCurrentWalletOperation(operation);
-    setProgress({
-      profileComplete: Boolean(response.data.profileComplete),
-      announcementComplete: Boolean(response.data.announcementComplete),
-    });
-    return response.data as { profileComplete: boolean; announcementComplete: boolean };
+    const requestKey = `${operation.wallet}:${operation.generation}:${token}`;
+    if (progressRequestRef.current?.key === requestKey) return progressRequestRef.current.promise;
+    const promise = (async () => {
+      try {
+        const response = await axios.post("/api/dust-genesis/progress", {}, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        requireCurrentWalletOperation(operation);
+        const nextProgress = {
+          profileComplete: Boolean(response.data.profileComplete),
+          announcementComplete: Boolean(response.data.announcementComplete),
+        };
+        setProgress((current) => current.profileComplete === nextProgress.profileComplete
+          && current.announcementComplete === nextProgress.announcementComplete ? current : nextProgress);
+        setTaskError((current) => current?.startsWith("Task status could not be checked") ? null : current);
+        return nextProgress;
+      } catch (error) {
+        if (isCurrentWalletOperation(operation)) {
+          if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+          setTaskError("Task status could not be checked. Please try again.");
+        }
+        throw error;
+      }
+    })();
+    const request = { key: requestKey, promise };
+    progressRequestRef.current = request;
+    void promise.then(
+      () => { if (progressRequestRef.current === request) progressRequestRef.current = null; },
+      () => { if (progressRequestRef.current === request) progressRequestRef.current = null; },
+    );
+    return promise;
   };
 
   useEffect(() => {
@@ -778,6 +863,30 @@ function DustGenesisCampaign() {
     const operation = captureWalletOperation(address);
     void updateProgress(session.token, operation).catch(() => undefined);
   }, [address, session]);
+
+  useEffect(() => {
+    if (!session || session.wallet !== address?.toLowerCase() || startedTasks.length === 0 || !address) return;
+    const hasPendingStartedTask = startedTasks.some((task) =>
+      task === "profile" ? !progress.profileComplete : !progress.announcementComplete,
+    );
+    if (!hasPendingStartedTask) return;
+    const operation = captureWalletOperation(address);
+    const refresh = () => {
+      if (document.visibilityState === "hidden" || !isCurrentWalletOperation(operation)) return;
+      void updateProgress(session.token, operation).catch(() => undefined);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const interval = window.setInterval(refresh, 2_000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(interval);
+    };
+  }, [address, session, startedTasks, progress]);
 
   const openTask = async (
     event: MouseEvent<HTMLAnchorElement>,
@@ -787,15 +896,21 @@ function DustGenesisCampaign() {
       event.preventDefault();
       return;
     }
+    event.preventDefault();
     if (!isConnected || !address) {
-      event.preventDefault();
       setOpen(true);
       return;
     }
+    if (taskOperationRef.current) return;
+    if (task.id === "announcement" && !progress.profileComplete) {
+      return;
+    }
     const operation = captureWalletOperation(address);
-    event.preventDefault();
     const popup = window.open("about:blank", "_blank");
     if (popup) popup.opener = null;
+    taskOperationRef.current = operation;
+    setStartingTask(task.id);
+    setTaskError(null);
     try {
       const token = await ensureWalletSession(operation);
       requireCurrentWalletOperation(operation);
@@ -803,15 +918,21 @@ function DustGenesisCampaign() {
         headers: { Authorization: `Bearer ${token}` },
       });
       requireCurrentWalletOperation(operation);
+      setStartedTasks((current) => current.includes(task.id) ? current : [...current, task.id]);
       if (popup) popup.location.replace(task.url);
-      else window.location.assign(task.url);
       void updateProgress(token, operation).catch(() => undefined);
-      window.setTimeout(() => { void updateProgress(token, operation).catch(() => undefined); }, 10_100);
+      if (!popup) setTaskError("Your browser blocked the X tab. Allow pop-ups and select the task link again.");
     } catch (error) {
       popup?.close();
       if (!isCurrentWalletOperation(operation)) return;
       if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
       if (!session) setOpen(true);
+      setTaskError("The task could not be started. Please try again.");
+    } finally {
+      if (taskOperationRef.current === operation) {
+        taskOperationRef.current = null;
+        if (isCurrentWalletOperation(operation)) setStartingTask(null);
+      }
     }
   };
 
@@ -830,27 +951,40 @@ function DustGenesisCampaign() {
   };
 
   const claimNft = async () => {
+    setClaimError(null);
     if (!isConnected || !address) {
+      setClaimError("Wallet connection was not completed. Connect a wallet, then retry Claim NFT.");
       setOpen(true);
       return;
     }
     if (!campaign?.contractAddress || !campaignActive || claiming) return;
     const operation = captureWalletOperation(address);
+    let stage: DustGenesisClaimStage = "network";
     setClaiming(true);
     try {
       if (chainId !== base.id) await switchChainAsync({ chainId: base.id });
       requireCurrentWalletOperation(operation);
+      stage = "session";
       const token = await ensureWalletSession(operation);
+      stage = "progress";
       const currentProgress = await updateProgress(token, operation);
-      if (!currentProgress.profileComplete || !currentProgress.announcementComplete) return;
+      if (!currentProgress.profileComplete || !currentProgress.announcementComplete) {
+        setClaimError("The task steps are not yet complete. Wait for their status to update, then retry Claim NFT.");
+        return;
+      }
+      stage = "authorization";
       const { data: authorization } = await axios.post<DustGenesisMintAuthorization>("/api/dust-genesis/authorization", {}, {
         headers: { Authorization: `Bearer ${token}` },
       });
       requireCurrentWalletOperation(operation);
       if (authorization.recipient.toLowerCase() !== operation.wallet
-        || authorization.contractAddress.toLowerCase() !== campaign.contractAddress.toLowerCase()) return;
+        || authorization.contractAddress.toLowerCase() !== campaign.contractAddress.toLowerCase()) {
+        setClaimError("The mint authorization did not match this wallet or campaign. Start a new claim attempt.");
+        return;
+      }
 
       requireCurrentWalletOperation(operation);
+      stage = "submission";
       const hash = await writeContractAsync({
         address: campaign.contractAddress,
         abi: DUST_GENESIS_ABI,
@@ -862,6 +996,7 @@ function DustGenesisCampaign() {
       });
       requireCurrentWalletOperation(operation);
       setTransactionPending(true);
+      stage = "receipt";
       let receipt;
       try {
         receipt = await publicClient!.waitForTransactionReceipt({ hash, confirmations: 1 });
@@ -873,11 +1008,21 @@ function DustGenesisCampaign() {
         if (!receipt) throw error;
       }
       requireCurrentWalletOperation(operation);
-      if (receipt.status === "success" && hasExpectedMintEvent(receipt, authorization, operation)) setShowSuccess(true);
+      if (receipt.status !== "success") {
+        setClaimError("The mint transaction reverted. Check your wallet and network, then retry Claim NFT.");
+        return;
+      }
+      if (!hasExpectedMintEvent(receipt, authorization, operation)) {
+        setClaimError("The transaction was confirmed, but the Dust Genesis mint could not be verified. Check the transaction before retrying.");
+        return;
+      }
+      setClaimError(null);
+      setShowSuccess(true);
     } catch (error) {
-      // Rejected, reverted, cancelled, or unconfirmed transactions never show success.
+      // Only expose safe, user-facing diagnostics; never show raw provider or server errors.
       if (!isCurrentWalletOperation(operation)) return;
       if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+      setClaimError(dustGenesisClaimErrorMessage(error, stage));
     } finally {
       if (isCurrentWalletOperation(operation)) {
         setTransactionPending(false);
@@ -903,21 +1048,32 @@ function DustGenesisCampaign() {
       <img src="/dust-genesis.png" alt="Dust Genesis NFT artwork" className="h-auto w-full max-w-md rounded-2xl object-contain" />
       <nav className="flex w-full max-w-md flex-col items-center gap-4 text-center">
         {(campaign?.tasks ?? [
-          { id: "profile" as const, label: "Open the official Dust Engine X profile", url: null },
+          { id: "profile" as const, label: "Follow the official Dust Engine X profile", url: "https://x.com/dustengineapp" },
           { id: "announcement" as const, label: "Open the official campaign announcement post", url: null },
         ]).map((task) => (
-          <a
-            key={task.id}
-            href={task.url ?? undefined}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-disabled={!task.url || undefined}
-            onClick={(event) => { void openTask(event, task); }}
-            className={`text-sm underline underline-offset-4 ${task.url ? "text-zinc-200 hover:text-white" : "cursor-not-allowed text-zinc-500"}`}
-          >
-            {task.label}
-          </a>
+          (() => {
+            const locked = task.id === "announcement" && !progress.profileComplete;
+            const busy = startingTask === task.id;
+            const unavailable = !task.url || locked || busy;
+            return (
+              <a
+                key={task.id}
+                href={task.url ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={task.id === "profile" ? "Follow the official Dust Engine X profile" : task.label}
+                aria-disabled={unavailable || undefined}
+                aria-busy={busy || undefined}
+                onClick={(event) => { void openTask(event, task); }}
+                className={`text-sm underline underline-offset-4 ${unavailable ? "cursor-not-allowed text-zinc-500" : "text-zinc-200 hover:text-white"}`}
+              >
+                {task.id === "profile" ? "Follow the official Dust Engine X profile" : task.label}
+                {startingTask === task.id ? " · Opening…" : null}
+              </a>
+            );
+          })()
         ))}
+        {taskError && <p role="status" className="text-center text-xs text-amber-300">{taskError}</p>}
       </nav>
       <button
         type="button"
@@ -929,6 +1085,11 @@ function DustGenesisCampaign() {
       >
         Claim NFT
       </button>
+      {claimError && (
+        <p role="alert" aria-live="assertive" aria-atomic="true" className="w-full max-w-md text-center text-sm text-rose-300">
+          {claimError}
+        </p>
+      )}
       {showSuccess && (
         <div
           className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-5 backdrop-blur-sm"
@@ -1152,6 +1313,13 @@ function ProductNavigation({
             </button>
           );
         })}
+        <a
+          href="/genesis"
+          aria-label="Open the Dust Genesis claim page"
+          className="flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-bold uppercase tracking-wide text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/70"
+        >
+          <span className="flex items-center gap-2"><ExternalLink size={16} />CLAIM NFT</span>
+        </a>
       </div>
     </nav>
   );
@@ -1203,6 +1371,13 @@ function MobileProductNavigation({
             )}
           </button>
         ))}
+        <a
+          href="/genesis"
+          aria-label="Open the Dust Genesis claim page"
+          className="flex min-h-12 w-full items-center rounded-xl px-4 text-left text-sm font-bold uppercase tracking-wide text-zinc-300 transition-colors hover:bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/70"
+        >
+          CLAIM NFT
+        </a>
       </div>
     </nav>
   );

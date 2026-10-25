@@ -19,6 +19,7 @@ export const DUST_GENESIS_CHAIN_ID = 8453;
 export const DUST_GENESIS_CAMPAIGN_DURATION_SECONDS = 14 * 24 * 60 * 60;
 export const DUST_GENESIS_TASK_DELAY_MS = 10_000;
 export const DUST_GENESIS_AUTHORIZATION_TTL_SECONDS = 5 * 60;
+export const DUST_GENESIS_PROFILE_URL = "https://x.com/dustengineapp";
 const WALLET_NONCE_TTL_MS = 5 * 60_000;
 const SESSION_TTL_MS = 24 * 60 * 60_000;
 const EXISTING_DUST_ENGINE_ADDRESS = "0x8CE9D13FEb45cFd723dac5923896A96A46DD3894".toLowerCase();
@@ -35,7 +36,6 @@ type ChainEligibility = {
 };
 
 export type DustGenesisRouteConfig = {
-  xProfileUrl?: string;
   xAnnouncementUrl?: string;
   contractAddress?: string;
   signerPrivateKey?: string;
@@ -110,7 +110,7 @@ function normalizeContractAddress(value: string | undefined): Address | undefine
 export function createDustGenesisRouter(db: Database.Database, config: DustGenesisRouteConfig = {}) {
   const router = express.Router();
   const now = config.now ?? Date.now;
-  const profileUrl = configuredXUrl(config.xProfileUrl);
+  const profileUrl = DUST_GENESIS_PROFILE_URL;
   const announcementUrl = configuredXUrl(config.xAnnouncementUrl);
   const contractAddress = normalizeContractAddress(config.contractAddress);
 
@@ -155,6 +155,29 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
     return { walletAddress: session.wallet_address as Address };
   };
 
+  const reconcileTaskProgress = (walletAddress: string, currentTime: number) => db.transaction(() => {
+    db.prepare(`UPDATE dust_genesis_task_progress SET completed_at = ?
+      WHERE wallet_address = ? AND task_key = 'profile' AND completed_at IS NULL AND started_at <= ?`)
+      .run(currentTime, walletAddress, currentTime - DUST_GENESIS_TASK_DELAY_MS);
+    const profile = db.prepare(`SELECT completed_at FROM dust_genesis_task_progress
+      WHERE wallet_address = ? AND task_key = 'profile'`).get(walletAddress) as { completed_at: number | null } | undefined;
+    if (profile?.completed_at !== null && profile?.completed_at !== undefined) {
+      db.prepare(`UPDATE dust_genesis_task_progress SET completed_at = NULL
+        WHERE wallet_address = ? AND task_key = 'announcement' AND started_at < ?`)
+        .run(walletAddress, profile.completed_at);
+      db.prepare(`UPDATE dust_genesis_task_progress SET completed_at = ?
+        WHERE wallet_address = ? AND task_key = 'announcement' AND completed_at IS NULL
+          AND started_at >= ? AND started_at <= ?`)
+        .run(currentTime, walletAddress, profile.completed_at, currentTime - DUST_GENESIS_TASK_DELAY_MS);
+    } else {
+      db.prepare(`UPDATE dust_genesis_task_progress SET completed_at = NULL
+        WHERE wallet_address = ? AND task_key = 'announcement'`)
+        .run(walletAddress);
+    }
+    return db.prepare(`SELECT task_key, completed_at FROM dust_genesis_task_progress WHERE wallet_address = ?`)
+      .all(walletAddress) as { task_key: DustGenesisTask; completed_at: number | null }[];
+  })();
+
   const requireSession = (req: Request, res: Response) => {
     if (enforceRateLimit(req, res, "session-ip")) return undefined;
     const session = getSession(req);
@@ -187,7 +210,7 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
         campaignDeadline: Number(campaignDeadline),
         chainTimestamp: Number(chainTimestamp),
         tasks: [
-          { id: "profile", label: "Open the official Dust Engine X profile", url: profileUrl },
+          { id: "profile", label: "Follow the official Dust Engine X profile", url: profileUrl },
           { id: "announcement", label: "Open the official campaign announcement post", url: announcementUrl },
         ],
       });
@@ -267,29 +290,39 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
     const session = requireSession(req, res);
     if (!session) return;
     const currentTime = now();
+    const walletAddress = session.walletAddress.toLowerCase();
+    if (task === "announcement") {
+      const progress = reconcileTaskProgress(walletAddress, currentTime);
+      if (!progress.some((entry) => entry.task_key === "profile" && entry.completed_at !== null)) {
+        return res.status(403).json({ error: "Complete the profile task first" });
+      }
+      const profile = db.prepare(`SELECT completed_at FROM dust_genesis_task_progress
+        WHERE wallet_address = ? AND task_key = 'profile'`).get(walletAddress) as { completed_at: number };
+      db.prepare(`UPDATE dust_genesis_task_progress SET started_at = ?, completed_at = NULL
+        WHERE wallet_address = ? AND task_key = 'announcement' AND started_at < ?`)
+        .run(currentTime, walletAddress, profile.completed_at);
+    }
     db.prepare(`INSERT INTO dust_genesis_task_progress (wallet_address, task_key, started_at)
       VALUES (?, ?, ?) ON CONFLICT(wallet_address, task_key) DO NOTHING`)
-      .run(session.walletAddress.toLowerCase(), task, currentTime);
+      .run(walletAddress, task, currentTime);
     return res.json({ started: true });
   });
 
   router.post("/progress", (req, res) => {
-    if (!hasOnlyKeys(req.body, [])) return res.status(400).json({ error: "Invalid request" });
-    const session = requireSession(req, res);
-    if (!session) return;
-    const currentTime = now();
-    const walletAddress = session.walletAddress.toLowerCase();
-    const tasks = db.transaction(() => {
-      db.prepare(`UPDATE dust_genesis_task_progress SET completed_at = ?
-        WHERE wallet_address = ? AND completed_at IS NULL AND started_at <= ?`)
-        .run(currentTime, walletAddress, currentTime - DUST_GENESIS_TASK_DELAY_MS);
-      return db.prepare(`SELECT task_key, completed_at FROM dust_genesis_task_progress WHERE wallet_address = ?`)
-        .all(walletAddress) as { task_key: DustGenesisTask; completed_at: number | null }[];
-    })();
-    return res.json({
-      profileComplete: tasks.some((task) => task.task_key === "profile" && task.completed_at !== null),
-      announcementComplete: tasks.some((task) => task.task_key === "announcement" && task.completed_at !== null),
-    });
+    try {
+      if (!hasOnlyKeys(req.body, [])) return res.status(400).json({ error: "Invalid request" });
+      const session = requireSession(req, res);
+      if (!session) return;
+      const currentTime = now();
+      const walletAddress = session.walletAddress.toLowerCase();
+      const tasks = reconcileTaskProgress(walletAddress, currentTime);
+      return res.json({
+        profileComplete: tasks.some((task) => task.task_key === "profile" && task.completed_at !== null),
+        announcementComplete: tasks.some((task) => task.task_key === "announcement" && task.completed_at !== null),
+      });
+    } catch {
+      return res.status(503).json({ error: "Dust Genesis task progress could not be checked" });
+    }
   });
 
   router.post("/authorization", async (req, res) => {
