@@ -24,7 +24,7 @@ import {
   useModal,
 } from "connectkit";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, useEffect, useMemo, useRef, type ReactNode, type MutableRefObject } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MutableRefObject, type MouseEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Settings,
@@ -48,6 +48,7 @@ import {
 import {
   formatUnits,
   createPublicClient,
+  decodeEventLog,
   getAddress,
   isAddress,
   parseUnits,
@@ -61,6 +62,7 @@ import {
 import { PERMIT2_ADDRESS } from "@uniswap/permit2-sdk";
 import axios from "axios";
 import { DUST_ENGINE_ADDRESS, DUST_ENGINE_ABI } from "./contracts/dustEngine";
+import { DUST_GENESIS_ABI } from "./contracts/dustGenesis";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { getRoutes, getStepTransaction } from "@lifi/sdk";
@@ -536,6 +538,18 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
     setMobileMenuOpen(false);
   };
 
+  if (window.location.pathname === "/genesis") {
+    return (
+      <WagmiProvider config={config}>
+        <QueryClientProvider client={queryClient}>
+          <ConnectKitProvider>
+            <DustGenesisCampaign />
+          </ConnectKitProvider>
+        </QueryClientProvider>
+      </WagmiProvider>
+    );
+  }
+
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
@@ -624,6 +638,310 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
         </ConnectKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
+  );
+}
+
+type DustGenesisCampaignConfig = {
+  chainId: number;
+  contractAddress: Address | null;
+  campaignStartTimestamp: number;
+  campaignDeadline: number;
+  chainTimestamp: number;
+  tasks: Array<{ id: "profile" | "announcement"; label: string; url: string | null }>;
+};
+type DustGenesisMintAuthorization = {
+  contractAddress: Address;
+  recipient: Address;
+  nonce: `0x${string}`;
+  expiry: number;
+  signature: `0x${string}`;
+};
+
+function isObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null;
+}
+
+function DustGenesisCampaign() {
+  const { address, isConnected, chainId } = useAccount();
+  const { setOpen } = useModal();
+  const { signMessageAsync } = useSignMessage();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: base.id });
+  const liveWalletRef = useRef(address?.toLowerCase() ?? null);
+  const walletGenerationRef = useRef(0);
+  const mountedRef = useRef(false);
+  const [campaign, setCampaign] = useState<DustGenesisCampaignConfig | null>(null);
+  const [campaignTimestamp, setCampaignTimestamp] = useState(0);
+  const [session, setSession] = useState<{ token: string; wallet: string; expiresAt: number } | null>(null);
+  const [progress, setProgress] = useState({ profileComplete: false, announcementComplete: false });
+  const [claiming, setClaiming] = useState(false);
+  const [transactionPending, setTransactionPending] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const refreshCampaign = async () => {
+      try {
+        const { data } = await axios.get<DustGenesisCampaignConfig>("/api/dust-genesis/config");
+        if (active) {
+          setCampaign(data);
+          setCampaignTimestamp((current) => Math.max(current, data.chainTimestamp));
+        }
+      } catch {
+        if (active) {
+          setCampaign(null);
+          setCampaignTimestamp(0);
+        }
+      }
+    };
+    void refreshCampaign();
+    const refreshInterval = window.setInterval(() => { void refreshCampaign(); }, 10_000);
+    const clockInterval = window.setInterval(() => {
+      setCampaignTimestamp((current) => current > 0 ? current + 1 : 0);
+    }, 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(refreshInterval);
+      window.clearInterval(clockInterval);
+    };
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useLayoutEffect(() => {
+    const nextWallet = address?.toLowerCase() ?? null;
+    if (liveWalletRef.current === nextWallet) return;
+    liveWalletRef.current = nextWallet;
+    walletGenerationRef.current += 1;
+    setSession(null);
+    setProgress({ profileComplete: false, announcementComplete: false });
+    setClaiming(false);
+    setTransactionPending(false);
+    setShowSuccess(false);
+  }, [address]);
+
+  type WalletOperation = { wallet: string; generation: number };
+  const captureWalletOperation = (wallet: Address): WalletOperation => ({
+    wallet: wallet.toLowerCase(),
+    generation: walletGenerationRef.current,
+  });
+  const isCurrentWalletOperation = (operation: WalletOperation) =>
+    mountedRef.current
+      && liveWalletRef.current === operation.wallet
+      && walletGenerationRef.current === operation.generation;
+  const requireCurrentWalletOperation = (operation: WalletOperation) => {
+    if (!isCurrentWalletOperation(operation)) throw new Error("wallet_operation_stale");
+  };
+
+  const ensureWalletSession = async (operation: WalletOperation) => {
+    requireCurrentWalletOperation(operation);
+    if (!address || !isConnected || address.toLowerCase() !== operation.wallet) throw new Error("wallet_required");
+    if (session?.wallet === operation.wallet && session.expiresAt > Date.now()) return session.token;
+    const challenge = await axios.post("/api/dust-genesis/auth/nonce", { walletAddress: operation.wallet });
+    requireCurrentWalletOperation(operation);
+    const signature = await signMessageAsync({ account: operation.wallet as Address, message: challenge.data.message });
+    requireCurrentWalletOperation(operation);
+    const verified = await axios.post("/api/dust-genesis/auth/verify", {
+      walletAddress: operation.wallet,
+      nonce: challenge.data.nonce,
+      signature,
+    });
+    requireCurrentWalletOperation(operation);
+    const nextSession = {
+      token: verified.data.accessToken as string,
+      wallet: operation.wallet,
+      expiresAt: Number(verified.data.expiresAt),
+    };
+    setSession(nextSession);
+    return nextSession.token;
+  };
+
+  const updateProgress = async (token: string, operation: WalletOperation) => {
+    requireCurrentWalletOperation(operation);
+    const response = await axios.post("/api/dust-genesis/progress", {}, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    requireCurrentWalletOperation(operation);
+    setProgress({
+      profileComplete: Boolean(response.data.profileComplete),
+      announcementComplete: Boolean(response.data.announcementComplete),
+    });
+    return response.data as { profileComplete: boolean; announcementComplete: boolean };
+  };
+
+  useEffect(() => {
+    if (!session || session.wallet !== address?.toLowerCase() || !address) return;
+    const operation = captureWalletOperation(address);
+    void updateProgress(session.token, operation).catch(() => undefined);
+  }, [address, session]);
+
+  const openTask = async (
+    event: MouseEvent<HTMLAnchorElement>,
+    task: DustGenesisCampaignConfig["tasks"][number],
+  ) => {
+    if (!task.url) {
+      event.preventDefault();
+      return;
+    }
+    if (!isConnected || !address) {
+      event.preventDefault();
+      setOpen(true);
+      return;
+    }
+    const operation = captureWalletOperation(address);
+    event.preventDefault();
+    const popup = window.open("about:blank", "_blank");
+    if (popup) popup.opener = null;
+    try {
+      const token = await ensureWalletSession(operation);
+      requireCurrentWalletOperation(operation);
+      await axios.post(`/api/dust-genesis/tasks/${task.id}/start`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      requireCurrentWalletOperation(operation);
+      if (popup) popup.location.replace(task.url);
+      else window.location.assign(task.url);
+      void updateProgress(token, operation).catch(() => undefined);
+      window.setTimeout(() => { void updateProgress(token, operation).catch(() => undefined); }, 10_100);
+    } catch (error) {
+      popup?.close();
+      if (!isCurrentWalletOperation(operation)) return;
+      if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+      if (!session) setOpen(true);
+    }
+  };
+
+  const hasExpectedMintEvent = (receipt: any, authorization: DustGenesisMintAuthorization, operation: WalletOperation) => {
+    if (!campaign?.contractAddress || !isCurrentWalletOperation(operation)) return false;
+    return receipt.logs.some((log) => {
+      if (log.address.toLowerCase() !== campaign.contractAddress?.toLowerCase()) return false;
+      try {
+        const event = decodeEventLog({ abi: DUST_GENESIS_ABI, eventName: "DustGenesisMinted", data: log.data, topics: log.topics });
+        return event.args.recipient.toLowerCase() === operation.wallet
+          && event.args.authorizationNonce.toLowerCase() === authorization.nonce.toLowerCase();
+      } catch {
+        return false;
+      }
+    });
+  };
+
+  const claimNft = async () => {
+    if (!isConnected || !address) {
+      setOpen(true);
+      return;
+    }
+    if (!campaign?.contractAddress || !campaignActive || claiming) return;
+    const operation = captureWalletOperation(address);
+    setClaiming(true);
+    try {
+      if (chainId !== base.id) await switchChainAsync({ chainId: base.id });
+      requireCurrentWalletOperation(operation);
+      const token = await ensureWalletSession(operation);
+      const currentProgress = await updateProgress(token, operation);
+      if (!currentProgress.profileComplete || !currentProgress.announcementComplete) return;
+      const { data: authorization } = await axios.post<DustGenesisMintAuthorization>("/api/dust-genesis/authorization", {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      requireCurrentWalletOperation(operation);
+      if (authorization.recipient.toLowerCase() !== operation.wallet
+        || authorization.contractAddress.toLowerCase() !== campaign.contractAddress.toLowerCase()) return;
+
+      requireCurrentWalletOperation(operation);
+      const hash = await writeContractAsync({
+        address: campaign.contractAddress,
+        abi: DUST_GENESIS_ABI,
+        functionName: "mint",
+        args: [authorization.nonce, BigInt(authorization.expiry), authorization.signature],
+        account: operation.wallet as Address,
+        chain: base,
+        chainId: base.id,
+      });
+      requireCurrentWalletOperation(operation);
+      setTransactionPending(true);
+      let receipt;
+      try {
+        receipt = await publicClient!.waitForTransactionReceipt({ hash, confirmations: 1 });
+      } catch (error) {
+        const replacement = error as { name?: string; receipt?: typeof receipt; cause?: { name?: string; receipt?: typeof receipt } };
+        if (replacement.name === "TransactionReplacedError" || replacement.cause?.name === "TransactionReplacedError") {
+          receipt = replacement.receipt ?? replacement.cause?.receipt;
+        }
+        if (!receipt) throw error;
+      }
+      requireCurrentWalletOperation(operation);
+      if (receipt.status === "success" && hasExpectedMintEvent(receipt, authorization, operation)) setShowSuccess(true);
+    } catch (error) {
+      // Rejected, reverted, cancelled, or unconfirmed transactions never show success.
+      if (!isCurrentWalletOperation(operation)) return;
+      if (axios.isAxiosError(error) && error.response?.status === 401) setSession(null);
+    } finally {
+      if (isCurrentWalletOperation(operation)) {
+        setTransactionPending(false);
+        setClaiming(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!showSuccess) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setShowSuccess(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showSuccess]);
+
+  const tasksComplete = progress.profileComplete && progress.announcementComplete;
+  const campaignActive = Boolean(campaign?.campaignStartTimestamp
+    && campaignTimestamp >= campaign.campaignStartTimestamp
+    && campaignTimestamp < campaign.campaignDeadline);
+  const claimDisabled = claiming || !tasksComplete || !campaign?.contractAddress || !campaignActive;
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-7 bg-zinc-950 px-5 py-8 text-zinc-100">
+      <img src="/dust-genesis.png" alt="Dust Genesis NFT artwork" className="h-auto w-full max-w-md rounded-2xl object-contain" />
+      <nav className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+        {(campaign?.tasks ?? [
+          { id: "profile" as const, label: "Open the official Dust Engine X profile", url: null },
+          { id: "announcement" as const, label: "Open the official campaign announcement post", url: null },
+        ]).map((task) => (
+          <a
+            key={task.id}
+            href={task.url ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-disabled={!task.url || undefined}
+            onClick={(event) => { void openTask(event, task); }}
+            className={`text-sm underline underline-offset-4 ${task.url ? "text-zinc-200 hover:text-white" : "cursor-not-allowed text-zinc-500"}`}
+          >
+            {task.label}
+          </a>
+        ))}
+      </nav>
+      <button
+        type="button"
+        onClick={() => { void claimNft(); }}
+        disabled={claimDisabled}
+        aria-busy={claiming || transactionPending}
+        aria-label={transactionPending ? "Mint transaction pending" : claiming ? "Claim request pending" : "Claim NFT"}
+        className="w-full max-w-md rounded-xl bg-emerald-500 px-5 py-3 text-sm font-black text-zinc-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Claim NFT
+      </button>
+      {showSuccess && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-5 backdrop-blur-sm"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setShowSuccess(false); }}
+        >
+          <section role="dialog" aria-modal="true" aria-label="Mint confirmed" className="flex w-full max-w-sm flex-col items-center gap-5 rounded-3xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
+            <img src="/dust-genesis.png" alt="Dust Genesis NFT artwork" className="h-auto w-full rounded-2xl object-contain" />
+            <p className="text-center text-base font-semibold text-zinc-100">Dust Engine will never forget you.</p>
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3183,19 +3501,13 @@ function SwapButton({
               if (receipt.status === "success") {
                 addLog("✅ Compression transaction confirmed");
 
-                const debugResults = parsedLogs
-                  .filter(
-                    (log): log is any =>
-                      log !== null &&
-                      log.eventName === "Debug" &&
-                      log.args &&
-                      typeof log.args.token === "string" &&
-                      typeof log.args.success === "boolean",
-                  )
-                  .map((log) => ({
-                    token: log.args.token.toLowerCase(),
-                    success: log.args.success,
-                  }));
+                const debugResults = parsedLogs.flatMap((log) => {
+                  if (!log || log.eventName !== "Debug" || !isObject(log.args)) return [];
+                  const token: unknown = Reflect.get(log.args, "token");
+                  const success: unknown = Reflect.get(log.args, "success");
+                  if (typeof token !== "string" || typeof success !== "boolean") return [];
+                  return [{ token: token.toLowerCase(), success }];
+                });
 
 
                 const successfulAddresses = new Set(

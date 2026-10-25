@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import cors from "cors";
 import Database from "better-sqlite3";
 import crypto from "crypto";
-import { verifyMessage, isAddress, isHash, createPublicClient, http } from "viem";
+import { verifyMessage, isAddress, isHash, getAddress, createPublicClient, http } from "viem";
 import { base } from "viem/chains";
 import { getStatus, type FullStatusData } from "@lifi/sdk";
 import { persistVerifiedCleanDustAmbassadorActivity, verifyCleanDustTransaction, verifyCleanDustAchievementTransaction } from "./server/ambassadorCleanVerifier";
@@ -20,6 +20,7 @@ import { discoverBaseTokenCandidates, discoveryHttpStatus } from "./server/token
 import { configuredBaseRpcUrl, parseTokenVerificationRequest, verifyTokenCandidates } from "./server/tokenVerification";
 import type { VerificationClient } from "./server/tokenVerification";
 import { mountBaseRpcProxy } from "./server/baseRpcProxy";
+import { createDustGenesisChainEligibility, createDustGenesisRouter, initializeDustGenesisTables } from "./server/dustGenesis";
 
 dotenv.config();
 
@@ -102,6 +103,19 @@ async function startServer() {
   const statsDb = new Database(statsDatabasePath);
   // SQLite does not enforce declared foreign keys unless this is enabled per connection.
   statsDb.pragma("foreign_keys = ON");
+  initializeDustGenesisTables(statsDb);
+  const dustGenesisContractAddress = process.env.DUST_GENESIS_CONTRACT_ADDRESS;
+  const dustGenesisChainEligibility = dustGenesisContractAddress && isAddress(dustGenesisContractAddress)
+    && dustGenesisContractAddress.toLowerCase() !== "0x8ce9d13feb45cfd723dac5923896a96a46dd3894"
+    ? createDustGenesisChainEligibility(getAddress(dustGenesisContractAddress))
+    : undefined;
+  app.use("/api/dust-genesis", createDustGenesisRouter(statsDb, {
+    xProfileUrl: process.env.DUST_GENESIS_X_PROFILE_URL,
+    xAnnouncementUrl: process.env.DUST_GENESIS_X_ANNOUNCEMENT_URL,
+    contractAddress: dustGenesisContractAddress,
+    signerPrivateKey: process.env.DUST_GENESIS_SIGNER_PRIVATE_KEY,
+    chainEligibility: dustGenesisChainEligibility,
+  }));
 
   statsDb.exec(`
     CREATE TABLE IF NOT EXISTS app_stats (
