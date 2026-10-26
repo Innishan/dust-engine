@@ -22,7 +22,7 @@ const testUrls = {
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 assert.match(appSource, /if \(window\.location\.pathname === "\/genesis"\) \{\s*return \(\s*<WagmiProvider config=\{config\} reconnectOnMount=\{false\}>/s,
   "the Genesis route does not automatically reconnect a wallet on page load");
-const campaignStart = appSource.indexOf("function DustGenesisCampaign()");
+const campaignStart = appSource.indexOf("function DustGenesisCampaign(");
 const campaignEnd = appSource.indexOf("function WalletDiagnostics", campaignStart);
 assert.ok(campaignStart >= 0 && campaignEnd > campaignStart, "Dust Genesis campaign component exists");
 const campaignSource = appSource.slice(campaignStart, campaignEnd);
@@ -45,6 +45,32 @@ const claimEnd = campaignSource.indexOf("useEffect(() => {\n    if (!showSuccess
 assert.ok(openTaskStart >= 0 && openTaskEnd > openTaskStart && claimStart > openTaskEnd && claimEnd > claimStart);
 assert.doesNotMatch(campaignSource.slice(openTaskStart, openTaskEnd), /ensureWalletSession|signMessageAsync|setOpen\(|\/auth\/(nonce|verify)/,
   "task-link interactions do not connect or request wallet signatures");
+assert.doesNotMatch(campaignSource.slice(openTaskStart, openTaskEnd), /window\.open\("about:blank"/,
+  "task links do not depend on a delayed blank popup");
+assert.match(campaignSource.slice(openTaskStart, openTaskEnd), /if \(isFarcasterMiniApp\) event\.preventDefault\(\)/,
+  "only the embedded mini-app intercepts the native task link");
+assert.match(campaignSource.slice(openTaskStart, openTaskEnd), /sdk\.actions\.openUrl\(task\.url\)/,
+  "Farcaster opens the external task with the Mini App SDK action");
+const openTaskSource = campaignSource.slice(openTaskStart, openTaskEnd);
+const startRequestIndex = openTaskSource.indexOf("const taskStartRequest = axios.post");
+const openUrlIndex = openTaskSource.indexOf("sdk.actions.openUrl(task.url)");
+const startAwaitIndex = openTaskSource.indexOf("await taskStartRequest");
+assert.ok(startRequestIndex >= 0 && openUrlIndex > startRequestIndex && startAwaitIndex > openUrlIndex,
+  "Farcaster host URL opening is invoked synchronously before awaiting the task-start response");
+assert.match(openTaskSource, /void openUrlResult\.then\(/,
+  "an asynchronous Farcaster open failure is reported without keeping the task button busy");
+assert.doesNotMatch(openTaskSource, /await openUrlResult/,
+  "a failed or stalled host open action does not prevent the user from retrying the link");
+assert.match(campaignSource, /href=\{task\.url\}[\s\S]*?target="_blank"/,
+  "regular browser task links retain native separate-tab navigation");
+assert.match(campaignSource, /X-Dust-Genesis-Task-Session-Mode": "bearer"/,
+  "the embedded app requests a task-session token without relying on third-party cookies");
+assert.match(campaignSource, /sessionStorage\.setItem\(DUST_GENESIS_TASK_SESSION_STORAGE_KEY/,
+  "the short-lived task token is scoped to the browser tab session");
+assert.match(appSource, /if \(isInMiniApp\) void sdk\.actions\.ready\(\)/,
+  "Farcaster SDK readiness is signaled only after a Mini App context is detected");
+assert.doesNotMatch(appSource, /^sdk\.actions\.ready\(\);/m,
+  "regular website module startup does not call the Farcaster host action");
 assert.match(campaignSource.slice(claimStart, claimEnd), /ensureWalletSession\(/,
   "wallet verification starts only in the Claim NFT handler");
 assert.equal((campaignSource.match(/ensureWalletSession\(/g) ?? []).length, 1,
@@ -58,6 +84,8 @@ const db = new Database(":memory:");
 initializeDustGenesisTables(db);
 const anonymousDb = new Database(":memory:");
 initializeDustGenesisTables(anonymousDb);
+const bearerDb = new Database(":memory:");
+initializeDustGenesisTables(bearerDb);
 const missingAnnouncementDb = new Database(":memory:");
 initializeDustGenesisTables(missingAnnouncementDb);
 let now = 1_800_000_000_000;
@@ -90,6 +118,11 @@ app.use("/api/dust-genesis-anonymous", createDustGenesisRouter(anonymousDb, {
   now: () => now,
   secureCookies: true,
 }));
+app.use("/api/dust-genesis-bearer", createDustGenesisRouter(bearerDb, {
+  xAnnouncementUrl: testUrls.announcement,
+  now: () => now,
+  secureCookies: true,
+}));
 app.use("/api/dust-genesis-missing-announcement", createDustGenesisRouter(missingAnnouncementDb, {
   now: () => missingAnnouncementNow,
 }));
@@ -116,13 +149,14 @@ async function post(path: string, body: unknown, token?: string, cookie?: string
   return { status: response.status, data: await response.json() as Record<string, any> };
 }
 
-async function postTo(baseUrl: string, path: string, body: unknown, token?: string, cookie?: string) {
+async function postTo(baseUrl: string, path: string, body: unknown, token?: string, cookie?: string, taskSessionToken?: string) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
+      ...(taskSessionToken ? { "X-Dust-Genesis-Task-Session": taskSessionToken } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -156,9 +190,56 @@ try {
   assert.match(anonymousConfigResponse.headers.get("set-cookie") ?? "", /HttpOnly; SameSite=Strict; Max-Age=3600; Secure/);
   assert.equal(anonymousConfigResponse.headers.get("cache-control"), "no-store");
   const anonymousConfig = await anonymousConfigResponse.json() as { tasks: Array<{ id: string; url: string | null }> };
+  assert.equal(Object.prototype.hasOwnProperty.call(anonymousConfig, "taskSessionToken"), false,
+    "ordinary browsers do not receive a JavaScript-readable task token");
   assert.equal(anonymousConfig.tasks[0].url, DUST_GENESIS_PROFILE_URL);
   assert.equal(anonymousConfig.tasks[1].url, testUrls.announcement,
     "Markdown-formatted campaign configuration returns the original plain announcement URL");
+
+  const bearerApi = `http://127.0.0.1:${address.port}/api/dust-genesis-bearer`;
+  const bearerConfigResponse = await fetch(`${bearerApi}/config`, {
+    headers: { "X-Dust-Genesis-Task-Session-Mode": "bearer" },
+  });
+  const bearerConfig = await bearerConfigResponse.json() as { taskSessionToken?: string };
+  assert.match(bearerConfig.taskSessionToken ?? "", /^[a-f0-9]{64}$/i,
+    "embedded config returns a high-entropy opaque task token only when explicitly requested");
+  assert.equal(bearerConfigResponse.headers.get("cache-control"), "no-store",
+    "bearer task-session tokens are not cacheable");
+  assert.match(bearerConfigResponse.headers.get("set-cookie") ?? "", /HttpOnly/,
+    "the normal HttpOnly cookie remains available alongside the embedded token");
+  assert.equal((await postTo(bearerApi, "/tasks/profile/start", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 200,
+    "the embedded task flow starts without depending on a cookie being sent");
+  assert.equal((await postTo(bearerApi, "/tasks/bind", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 401,
+    "a task token alone cannot bind progress to a wallet");
+  assert.equal((await postTo(bearerApi, "/authorization", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 401,
+    "a task token alone cannot request mint authorization");
+  assert.equal((await postTo(bearerApi, "/authorization", {}, bearerConfig.taskSessionToken)).status, 401,
+    "a task token used as a wallet bearer credential is rejected");
+  const beforeRejectedStart = await postTo(bearerApi, "/progress", {}, undefined, undefined, bearerConfig.taskSessionToken);
+  assert.equal((await postTo(bearerApi, "/tasks/profile/start", {}, undefined, undefined, "invalid-token")).status, 401,
+    "a malformed task token cannot start a timer");
+  const afterRejectedStart = await postTo(bearerApi, "/progress", {}, undefined, undefined, bearerConfig.taskSessionToken);
+  assert.deepEqual(afterRejectedStart.data, beforeRejectedStart.data,
+    "a rejected task-start request leaves server progress unchanged");
+  assert.equal((await postTo(bearerApi, "/tasks/announcement/start", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 403,
+    "the bearer fallback does not bypass profile-before-announcement ordering");
+  now += 10_000;
+  const bearerProgress = await postTo(bearerApi, "/progress", {}, undefined, undefined, bearerConfig.taskSessionToken);
+  assert.equal(bearerProgress.status, 200);
+  assert.equal(bearerProgress.data.profileComplete, true,
+    "the embedded flow reconciles profile completion using server time after ten seconds");
+  const bearerWithOtherTabCookie = await postTo(bearerApi, "/progress", {}, undefined, taskCookie, bearerConfig.taskSessionToken);
+  assert.equal(bearerWithOtherTabCookie.data.profileComplete, true,
+    "the explicit tab-scoped token remains authoritative if another tab replaced the shared cookie");
+  assert.equal((await postTo(bearerApi, "/tasks/announcement/start", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 200,
+    "the embedded flow unlocks the announcement only after server completion");
+  assert.equal((await postTo(bearerApi, "/progress", {}, undefined, undefined, "invalid-token")).status, 401,
+    "malformed task-session bearer values fail closed");
+  now += 60 * 60_000;
+  assert.equal((await postTo(bearerApi, "/progress", {}, undefined, undefined, bearerConfig.taskSessionToken)).status, 401,
+    "the embedded task token expires with its one-hour server session");
+  now -= 60 * 60_000;
+  now -= 10_000;
   const initialProgress = await postTo(anonymousApi, "/progress", {}, undefined, taskCookie);
   assert.deepEqual(initialProgress.data, {
     profileStarted: false,

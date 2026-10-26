@@ -24,6 +24,8 @@ const WALLET_NONCE_TTL_MS = 5 * 60_000;
 const SESSION_TTL_MS = 24 * 60 * 60_000;
 const TASK_SESSION_TTL_MS = 60 * 60_000;
 const TASK_SESSION_COOKIE = "dust_genesis_task_session";
+const TASK_SESSION_HEADER = "x-dust-genesis-task-session";
+const TASK_SESSION_MODE_HEADER = "x-dust-genesis-task-session-mode";
 const EXISTING_DUST_ENGINE_ADDRESS = "0x8CE9D13FEb45cFd723dac5923896A96A46DD3894".toLowerCase();
 
 type DustGenesisTask = "profile" | "announcement";
@@ -199,12 +201,20 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
       .all(walletAddress) as { task_key: DustGenesisTask; started_at: number; completed_at: number | null }[];
   })();
 
-  const readTaskSession = (req: Request) => {
+  const readTaskSessionToken = (req: Request) => {
+    const headerToken = req.header(TASK_SESSION_HEADER);
+    if (headerToken !== undefined) return /^[a-f0-9]{64}$/i.test(headerToken) ? headerToken : undefined;
     const cookies = (req.header("cookie") || "").split(";").map((part) => part.trim());
     const values = cookies.filter((part) => part.startsWith(`${TASK_SESSION_COOKIE}=`));
-    if (values.length !== 1) return undefined;
-    const token = values[0].slice(TASK_SESSION_COOKIE.length + 1);
-    if (!/^[a-f0-9]{64}$/i.test(token)) return undefined;
+    if (values.length > 1) return undefined;
+    const cookieToken = values.length === 1 ? values[0].slice(TASK_SESSION_COOKIE.length + 1) : undefined;
+    if (cookieToken !== undefined && !/^[a-f0-9]{64}$/i.test(cookieToken)) return undefined;
+    return cookieToken;
+  };
+
+  const readTaskSession = (req: Request) => {
+    const token = readTaskSessionToken(req);
+    if (!token) return undefined;
     const sessionHash = crypto.createHash("sha256").update(token.toLowerCase()).digest("hex");
     const session = db.prepare(`SELECT session_hash, expires_at, wallet_address
       FROM dust_genesis_task_sessions WHERE session_hash = ?`).get(sessionHash) as {
@@ -233,10 +243,14 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
     const cookie = `${TASK_SESSION_COOKIE}=${token}; Path=/api/dust-genesis; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(TASK_SESSION_TTL_MS / 1000)}${secure ? "; Secure" : ""}`;
     res.setHeader("Cache-Control", "no-store");
     res.append("Set-Cookie", cookie);
-    return { session_hash: sessionHash, expires_at: expiresAt, wallet_address: null };
+    return { session_hash: sessionHash, expires_at: expiresAt, wallet_address: null, token };
   };
 
-  const ensureTaskSession = (req: Request, res: Response) => readTaskSession(req) ?? createTaskSession(res);
+  const ensureTaskSession = (req: Request, res: Response) => {
+    const session = readTaskSession(req);
+    if (session) return { ...session, token: readTaskSessionToken(req) };
+    return createTaskSession(res);
+  };
 
   const requireTaskSession = (req: Request, res: Response) => {
     if (enforceRateLimit(req, res, "task-session-ip")) return undefined;
@@ -305,13 +319,16 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
         && campaignDeadline - campaignStartTimestamp !== BigInt(DUST_GENESIS_CAMPAIGN_DURATION_SECONDS)) {
         return res.status(503).json({ error: "Dust Genesis campaign configuration is invalid" });
       }
-      ensureTaskSession(req, res);
+      res.setHeader("Cache-Control", "no-store");
+      const taskSession = ensureTaskSession(req, res);
+      const includeBearerTaskSession = req.header(TASK_SESSION_MODE_HEADER) === "bearer";
       return res.json({
         chainId: DUST_GENESIS_CHAIN_ID,
         contractAddress: contractAddress ?? null,
         campaignStartTimestamp: Number(campaignStartTimestamp),
         campaignDeadline: Number(campaignDeadline),
         chainTimestamp: Number(chainTimestamp),
+        ...(includeBearerTaskSession ? { taskSessionToken: taskSession.token } : {}),
         tasks: [
           { id: "profile", label: "Follow the official Dust Engine X profile", url: profileUrl },
           { id: "announcement", label: "Like and retweet the post", url: announcementUrl },

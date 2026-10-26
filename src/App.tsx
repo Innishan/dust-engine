@@ -266,8 +266,6 @@ function farcasterMiniAppWithDiagnostics() {
   };
 }
 
-sdk.actions.ready();
-
 // --- Utility ---
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -491,7 +489,11 @@ function MiniAppWalletRuntime() {
   useEffect(() => {
     let isCurrent = true;
     void sdk.isInMiniApp().then((isInMiniApp) => {
-      if (isCurrent) setIsFarcasterMiniApp(isInMiniApp);
+      if (!isCurrent) return;
+      if (isInMiniApp) void sdk.actions.ready().catch(() => undefined);
+      setIsFarcasterMiniApp(isInMiniApp);
+    }).catch(() => {
+      if (isCurrent) setIsFarcasterMiniApp(false);
     });
     return () => {
       isCurrent = false;
@@ -543,7 +545,7 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
       <WagmiProvider config={config} reconnectOnMount={false}>
         <QueryClientProvider client={queryClient}>
           <ConnectKitProvider>
-            <DustGenesisCampaign />
+            <DustGenesisCampaign isFarcasterMiniApp={isFarcasterMiniApp} />
           </ConnectKitProvider>
         </QueryClientProvider>
       </WagmiProvider>
@@ -647,6 +649,7 @@ type DustGenesisCampaignConfig = {
   campaignStartTimestamp: number;
   campaignDeadline: number;
   chainTimestamp: number;
+  taskSessionToken?: string;
   tasks: Array<{ id: "profile" | "announcement"; label: string; url: string | null }>;
 };
 type DustGenesisMintAuthorization = {
@@ -686,7 +689,10 @@ const SAFE_DUST_GENESIS_API_ERRORS: Record<string, string> = {
   "Dust Genesis campaign state could not be checked": "Campaign status could not be checked. Please try again later.",
   "Dust Genesis campaign configuration is invalid": "Campaign configuration is unavailable. Please try again later.",
   "Too many requests": "Too many claim requests were made. Wait a moment, then retry.",
+  "Task session expired. Reload the campaign page to continue.": "Your campaign task session expired. Reload this page to start a fresh task session.",
 };
+
+const DUST_GENESIS_TASK_SESSION_STORAGE_KEY = "dust-genesis-task-session";
 
 function dustGenesisClaimErrorMessage(error: unknown, stage: DustGenesisClaimStage): string {
   let current: unknown = error;
@@ -718,7 +724,7 @@ function dustGenesisClaimErrorMessage(error: unknown, stage: DustGenesisClaimSta
   }
 }
 
-function DustGenesisCampaign() {
+function DustGenesisCampaign({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
   const { address, isConnected, chainId } = useAccount();
   const { setOpen } = useModal();
   const { signMessageAsync } = useSignMessage();
@@ -740,6 +746,8 @@ function DustGenesisCampaign() {
   const [startedTasks, setStartedTasks] = useState<Array<"profile" | "announcement">>([]);
   const [startingTask, setStartingTask] = useState<"profile" | "announcement" | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
+  const taskSessionTokenRef = useRef<string | null>(null);
+  const [taskSessionReady, setTaskSessionReady] = useState(!isFarcasterMiniApp);
   const taskOperationRef = useRef<number | null>(null);
   const taskOperationGenerationRef = useRef(0);
   const progressRequestRef = useRef<{ key: string; promise: Promise<DustGenesisProgress> } | null>(null);
@@ -753,15 +761,39 @@ function DustGenesisCampaign() {
     let active = true;
     const refreshCampaign = async () => {
       try {
-        const { data } = await axios.get<DustGenesisCampaignConfig>("/api/dust-genesis/config");
+        let storedToken: string | null = null;
+        if (isFarcasterMiniApp) {
+          try {
+            storedToken = window.sessionStorage.getItem(DUST_GENESIS_TASK_SESSION_STORAGE_KEY);
+          } catch {
+            // Embedded browsers may disable storage; this page can keep the token in memory.
+          }
+        }
+        taskSessionTokenRef.current = storedToken && /^[a-f0-9]{64}$/i.test(storedToken) ? storedToken : null;
+        const { data } = await axios.get<DustGenesisCampaignConfig>("/api/dust-genesis/config", isFarcasterMiniApp ? {
+          headers: {
+            "X-Dust-Genesis-Task-Session-Mode": "bearer",
+            ...(taskSessionTokenRef.current ? { "X-Dust-Genesis-Task-Session": taskSessionTokenRef.current } : {}),
+          },
+        } : undefined);
         if (active) {
+          if (isFarcasterMiniApp && data.taskSessionToken && /^[a-f0-9]{64}$/i.test(data.taskSessionToken)) {
+            taskSessionTokenRef.current = data.taskSessionToken;
+            try {
+              window.sessionStorage.setItem(DUST_GENESIS_TASK_SESSION_STORAGE_KEY, data.taskSessionToken);
+            } catch {
+              // The server session remains usable for this page lifetime.
+            }
+          }
           setCampaign(data);
           setCampaignTimestamp((current) => Math.max(current, data.chainTimestamp));
+          setTaskSessionReady(true);
         }
       } catch {
         if (active) {
           setCampaign(null);
           setCampaignTimestamp(0);
+          setTaskSessionReady(false);
         }
       }
     };
@@ -775,7 +807,7 @@ function DustGenesisCampaign() {
       window.clearInterval(refreshInterval);
       window.clearInterval(clockInterval);
     };
-  }, []);
+  }, [isFarcasterMiniApp]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -840,14 +872,22 @@ function DustGenesisCampaign() {
 
   const updateProgress = (operation?: WalletOperation, token?: string) => {
     if (operation) requireCurrentWalletOperation(operation);
+    if (isFarcasterMiniApp && !taskSessionTokenRef.current) {
+      return Promise.reject(new Error("task_session_not_ready"));
+    }
     const requestGeneration = operation?.generation ?? walletGenerationRef.current;
     const requestKey = `${operation?.wallet ?? "anonymous"}:${requestGeneration}:${token ?? ""}`;
     if (progressRequestRef.current?.key === requestKey) return progressRequestRef.current.promise;
     const promise = (async () => {
       try {
-        const response = await axios.post<DustGenesisProgress>("/api/dust-genesis/progress", {}, token ? {
-          headers: { Authorization: `Bearer ${token}` },
-        } : undefined);
+        const response = await axios.post<DustGenesisProgress>("/api/dust-genesis/progress", {}, {
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(isFarcasterMiniApp && taskSessionTokenRef.current
+              ? { "X-Dust-Genesis-Task-Session": taskSessionTokenRef.current }
+              : {}),
+          },
+        });
         if (operation) requireCurrentWalletOperation(operation);
         else if (!mountedRef.current || requestGeneration !== walletGenerationRef.current) throw new Error("task_progress_stale");
         const nextProgress: DustGenesisProgress = {
@@ -885,8 +925,9 @@ function DustGenesisCampaign() {
   };
 
   useEffect(() => {
+    if (!taskSessionReady) return;
     void updateProgress().catch(() => undefined);
-  }, [address]);
+  }, [address, isFarcasterMiniApp, taskSessionReady]);
 
   useEffect(() => {
     if (startedTasks.length === 0) return;
@@ -920,34 +961,54 @@ function DustGenesisCampaign() {
       event.preventDefault();
       return;
     }
-    event.preventDefault();
+    if (isFarcasterMiniApp) event.preventDefault();
     if (taskOperationRef.current) return;
     if (task.id === "announcement" && !progress.profileComplete) {
       return;
     }
     const operation = ++taskOperationGenerationRef.current;
     const walletGeneration = walletGenerationRef.current;
-    const popup = window.open("about:blank", "_blank");
-    if (popup) popup.opener = null;
     taskOperationRef.current = operation;
     setStartingTask(task.id);
     setTaskError(null);
     try {
-      await axios.post(`/api/dust-genesis/tasks/${task.id}/start`, {});
+      const taskStartRequest = axios.post(`/api/dust-genesis/tasks/${task.id}/start`, {}, {
+        headers: isFarcasterMiniApp && taskSessionTokenRef.current
+          ? { "X-Dust-Genesis-Task-Session": taskSessionTokenRef.current }
+          : undefined,
+      });
+      let openUrlResult: Promise<boolean> | null = null;
+      if (isFarcasterMiniApp) {
+        try {
+          // Invoke the host action during the click turn; it is not a delayed popup.
+          openUrlResult = sdk.actions.openUrl(task.url).then(() => true, () => false);
+        } catch {
+          openUrlResult = Promise.resolve(false);
+        }
+      }
+      await taskStartRequest;
       if (!mountedRef.current || taskOperationRef.current !== operation
         || taskOperationGenerationRef.current !== operation || walletGenerationRef.current !== walletGeneration) {
-        popup?.close();
         return;
       }
       setStartedTasks((current) => current.includes(task.id) ? current : [...current, task.id]);
-      if (popup) popup.location.replace(task.url);
       void updateProgress().catch(() => undefined);
-      if (!popup) setTaskError("Your browser blocked the X tab. Allow pop-ups and select the task link again.");
+      if (openUrlResult) {
+        void openUrlResult.then((opened) => {
+          if (!opened && mountedRef.current && taskOperationGenerationRef.current === operation) {
+            setTaskError("The task timer started, but X could not be opened. Try the link again.");
+          }
+        });
+      }
     } catch (error) {
-      popup?.close();
       if (!mountedRef.current || taskOperationRef.current !== operation
         || taskOperationGenerationRef.current !== operation || walletGenerationRef.current !== walletGeneration) return;
-      setTaskError("The task could not be started. Please try again.");
+      const serverError = axios.isAxiosError(error) && isObject(error.response?.data)
+        ? (error.response?.data as { error?: unknown }).error
+        : undefined;
+      setTaskError(typeof serverError === "string" && SAFE_DUST_GENESIS_API_ERRORS[serverError]
+        ? SAFE_DUST_GENESIS_API_ERRORS[serverError]
+        : "The task could not be started. Check your connection and try again.");
     } finally {
       if (taskOperationRef.current === operation) {
         taskOperationRef.current = null;
@@ -999,7 +1060,12 @@ function DustGenesisCampaign() {
       stage = "authorization";
       setClaimProgressMessage("Securing the completed task session to this wallet.");
       await axios.post("/api/dust-genesis/tasks/bind", {}, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(isFarcasterMiniApp && taskSessionTokenRef.current
+            ? { "X-Dust-Genesis-Task-Session": taskSessionTokenRef.current }
+            : {}),
+        },
       });
       requireCurrentWalletOperation(operation);
       setClaimProgressMessage("Requesting the mint authorization.");
