@@ -5,6 +5,7 @@ import express from "express";
 import Database from "better-sqlite3";
 import { recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { getCoinbaseInjectedProvider, isCoinbaseMobileWalletContext, selectEmbeddedWalletConnector } from "../src/walletConnection.js";
 import { DUST_GENESIS_CAMPAIGN_DURATION_SECONDS, DUST_GENESIS_PROFILE_URL, createDustGenesisRouter, initializeDustGenesisTables } from "../server/dustGenesis.js";
 
 const SIGNER_KEY = `0x${"11".repeat(32)}` as Hex;
@@ -20,6 +21,45 @@ const testUrls = {
 };
 
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+const coinbaseProvider = { isCoinbaseWallet: true };
+const otherProvider = { isMetaMask: true };
+const coinbaseMobileWindow = {
+  ethereum: { providers: [otherProvider, coinbaseProvider] },
+  matchMedia: (query: string) => ({ matches: query === "(pointer: coarse)" }),
+};
+assert.equal(getCoinbaseInjectedProvider(coinbaseMobileWindow), coinbaseProvider,
+  "Coinbase provider discovery selects the wallet from an injected multiprovider");
+const coinbaseExtensionWindow = {
+  coinbaseWalletExtension: { request: () => undefined },
+  matchMedia: () => ({ matches: true }),
+};
+assert.equal(getCoinbaseInjectedProvider(coinbaseExtensionWindow), coinbaseExtensionWindow.coinbaseWalletExtension,
+  "the dedicated Coinbase injected-provider property is recognized without relying on an extra wallet flag");
+assert.equal(isCoinbaseMobileWalletContext(coinbaseMobileWindow), true,
+  "a touch-first context with an injected Coinbase provider is recognized");
+assert.match(appSource, /isCoinbaseMobile\s*\?\s*\[injected\(\{ target: "coinbaseWallet" \}\)\]/,
+  "the detected Coinbase mobile browser gets the wallet-specific injected connector");
+const desktopCoinbaseWindow = { ...coinbaseMobileWindow, matchMedia: () => ({ matches: false }) };
+assert.equal(isCoinbaseMobileWalletContext(desktopCoinbaseWindow), false,
+  "a desktop Coinbase extension keeps the normal wallet-selection flow");
+const ordinaryMobileWindow = { ethereum: otherProvider, matchMedia: () => ({ matches: true }) };
+assert.equal(isCoinbaseMobileWalletContext(ordinaryMobileWindow), false,
+  "other injected mobile wallets do not get rerouted to Coinbase");
+const connectorChoices = [
+  { id: "injected", name: "Browser wallet" },
+  { id: "coinbaseWallet", name: "Coinbase injected wallet" },
+  { id: "farcaster", name: "Farcaster Mini App" },
+];
+assert.equal(selectEmbeddedWalletConnector(connectorChoices, true, ordinaryMobileWindow), connectorChoices[2],
+  "Farcaster Mini Apps select the Farcaster connector even when another provider is injected");
+assert.equal(selectEmbeddedWalletConnector(connectorChoices, false, coinbaseMobileWindow), connectorChoices[1],
+  "a detected Coinbase mobile context selects only the Coinbase injected connector");
+assert.equal(selectEmbeddedWalletConnector(connectorChoices.slice(0, 1), true, ordinaryMobileWindow), undefined,
+  "a missing Farcaster connector is surfaced as unavailable rather than selecting a generic connector");
+assert.equal(selectEmbeddedWalletConnector(connectorChoices.slice(0, 1), false, coinbaseMobileWindow), undefined,
+  "a missing Coinbase connector is surfaced as unavailable rather than selecting a generic connector");
+assert.equal(selectEmbeddedWalletConnector(connectorChoices, false, ordinaryMobileWindow), undefined,
+  "ordinary mobile browsers do not get an embedded connector override");
 assert.match(appSource, /if \(window\.location\.pathname === "\/genesis"\) \{\s*return \(\s*<WagmiProvider config=\{config\} reconnectOnMount=\{false\}>/s,
   "the Genesis route does not automatically reconnect a wallet on page load");
 const campaignStart = appSource.indexOf("function DustGenesisCampaign(");
@@ -73,6 +113,10 @@ assert.doesNotMatch(appSource, /^sdk\.actions\.ready\(\);/m,
   "regular website module startup does not call the Farcaster host action");
 assert.match(campaignSource.slice(claimStart, claimEnd), /ensureWalletSession\(/,
   "wallet verification starts only in the Claim NFT handler");
+assert.match(campaignSource.slice(claimStart, claimEnd), /selectEmbeddedWalletConnector\(connectors, isFarcasterMiniApp, window\)/,
+  "claim connection uses the tested embedded-connector selector");
+assert.match(appSource, /if \(!isConnected && \(isFarcasterMiniApp \|\| isCoinbaseMobileWalletContext\(window\)\)\)[\s\S]*selectEmbeddedWalletConnector\(connectors, isFarcasterMiniApp, window\)[\s\S]*Wallet connection is unavailable in this embedded browser[\s\S]*connectAsync/,
+  "the header connects through the selected embedded connector and reports unavailable connectors without opening ConnectKit");
 assert.equal((campaignSource.match(/ensureWalletSession\(/g) ?? []).length, 1,
   "campaign load and task links cannot invoke the wallet session flow");
 assert.equal((campaignSource.match(/signMessageAsync\(/g) ?? []).length, 1,

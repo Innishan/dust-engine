@@ -110,6 +110,7 @@ import { diagnoseCleanDustScan, diagnoseDustToken, isDetectedDust, isInitiallySe
 import { diagnoseRouteQuote } from "./executionQuote";
 import { createProviderRequestMetrics, measureProviderRequest, roundedDurationMs } from "./scanDiagnostics";
 import { getWalletErrorDetails, logWalletDiagnostic, type WalletDiagnosticState } from "./walletDiagnostics";
+import { isCoinbaseMobileWalletContext, selectEmbeddedWalletConnector, type WalletProviderWindow } from "./walletConnection";
 
 const farcasterDiagnosticProviders = new WeakMap<object, object>();
 const walletConfigIds = new WeakMap<object, string>();
@@ -505,6 +506,7 @@ function MiniAppWalletRuntime() {
 }
 
 function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
+  const isCoinbaseMobile = isCoinbaseMobileWalletContext(window as unknown as WalletProviderWindow);
   const config = useMemo(() => createConfig(
     getDefaultConfig({
       appName: "Dust Cleaning Engine",
@@ -517,13 +519,15 @@ function DustEngineApp({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) 
       connectors: [
         ...(isFarcasterMiniApp
           ? [farcasterMiniAppWithDiagnostics()]
-          : [
-              injected(),
-              coinbaseWallet({ appName: "Dust Cleaning Engine" }),
-            ]),
+          : isCoinbaseMobile
+            ? [injected({ target: "coinbaseWallet" })]
+            : [
+                injected(),
+                coinbaseWallet({ appName: "Dust Cleaning Engine" }),
+              ]),
       ],
     }),
-  ), [isFarcasterMiniApp]);
+  ), [isFarcasterMiniApp, isCoinbaseMobile]);
 
   const [activeSection, setActiveSection] = useState<ProductSection>(() =>
     new URLSearchParams(window.location.search).get("section") === "ambassador" ? "ambassador" : "clean",
@@ -727,6 +731,7 @@ function dustGenesisClaimErrorMessage(error: unknown, stage: DustGenesisClaimSta
 function DustGenesisCampaign({ isFarcasterMiniApp }: { isFarcasterMiniApp: boolean }) {
   const { address, isConnected, chainId } = useAccount();
   const { setOpen } = useModal();
+  const { connectAsync, connectors } = useConnect();
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
@@ -1035,8 +1040,24 @@ function DustGenesisCampaign({ isFarcasterMiniApp }: { isFarcasterMiniApp: boole
     setClaimError(null);
     setClaimProgressMessage(null);
     if (!isConnected || !address) {
-      setClaimError("Wallet connection was not completed. Connect a wallet, then retry Claim NFT.");
-      setOpen(true);
+      const preferredConnector = selectEmbeddedWalletConnector(connectors, isFarcasterMiniApp, window);
+      if ((isFarcasterMiniApp || isCoinbaseMobileWalletContext(window)) && !preferredConnector) {
+        setClaimError("Wallet connection is unavailable in this embedded browser. Reopen the app and try again.");
+        return;
+      }
+      if (preferredConnector) {
+        try {
+          setClaimProgressMessage("Connecting your wallet. Approve the connection request to continue.");
+          await connectAsync({ connector: preferredConnector, chainId: base.id });
+          setClaimProgressMessage("Wallet connected. Press Claim NFT again to continue your claim.");
+        } catch {
+          setClaimProgressMessage(null);
+          setClaimError("Wallet connection was not completed. Retry Claim NFT when you are ready.");
+        }
+      } else {
+        setClaimError("Wallet connection was not completed. Connect a wallet, then retry Claim NFT.");
+        setOpen(true);
+      }
       return;
     }
     if (!campaign?.contractAddress || !campaignActive || claiming) return;
@@ -1327,8 +1348,9 @@ function ReferralAttribution() {
 }
 
 function ConnectButton({ isFarcasterMiniApp, activeSection }: { isFarcasterMiniApp: boolean; activeSection: ProductSection }) {
-  const { connect, connectors } = useConnect();
+  const { connectAsync, connectors } = useConnect();
   const account = useAccount();
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   return (
     <div className="shrink-0">
@@ -1337,16 +1359,26 @@ function ConnectButton({ isFarcasterMiniApp, activeSection }: { isFarcasterMiniA
           <button
             type="button"
             onClick={() => {
-              if (isFarcasterMiniApp && !isConnected) {
-                logWalletDiagnostic("HEADER_FARCASTER_CONNECT", {
-                  status: account.status, address: account.address, chainId: account.chainId,
-                  connectorId: account.connector?.id, connectorName: account.connector?.name, activeSection,
-                  environment: isFarcasterMiniApp ? "farcaster-mini-app" : "normal-web",
+              if (!isConnected && (isFarcasterMiniApp || isCoinbaseMobileWalletContext(window))) {
+                setConnectError(null);
+                const embeddedConnector = selectEmbeddedWalletConnector(connectors, isFarcasterMiniApp, window);
+                if (!embeddedConnector) {
+                  setConnectError("Wallet connection is unavailable in this embedded browser. Reopen the app or try again.");
+                  return;
+                }
+                if (isFarcasterMiniApp) {
+                  logWalletDiagnostic("HEADER_FARCASTER_CONNECT", {
+                    status: account.status, address: account.address, chainId: account.chainId,
+                    connectorId: account.connector?.id, connectorName: account.connector?.name, activeSection,
+                    environment: "farcaster-mini-app",
+                  });
+                }
+                void connectAsync({ connector: embeddedConnector }).catch(() => {
+                  setConnectError("Wallet connection was not completed. Check the wallet app and retry.");
                 });
-                const farcasterConnector = connectors.find((connector) => connector.id === "farcaster");
-                if (farcasterConnector) connect({ connector: farcasterConnector });
                 return;
               }
+              setConnectError(null);
               show();
             }}
             className="flex h-11 max-w-[150px] items-center gap-2 rounded-xl bg-zinc-800 px-3 text-sm font-semibold text-zinc-100 transition-colors hover:bg-zinc-700 sm:max-w-none sm:px-4"
@@ -1361,6 +1393,7 @@ function ConnectButton({ isFarcasterMiniApp, activeSection }: { isFarcasterMiniA
           </button>
         )}
       </ConnectKitButton.Custom>
+      {connectError && <p role="alert" className="mt-1 max-w-[260px] text-right text-xs text-red-300">{connectError}</p>}
     </div>
   );
 }
