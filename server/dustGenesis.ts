@@ -7,7 +7,7 @@ import {
   http,
   isAddress,
   isHex,
-  verifyMessage,
+  verifyMessage as verifyEoaMessage,
   type Address,
   type Hex,
 } from "viem";
@@ -37,6 +37,7 @@ type ChainEligibility = {
   campaignStartTimestamp(): Promise<bigint>;
   campaignDeadline(): Promise<bigint>;
   chainTimestamp(): Promise<bigint>;
+  verifyWalletSignature?(input: { address: Address; message: string; signature: Hex }): Promise<boolean>;
 };
 
 export type DustGenesisRouteConfig = {
@@ -377,10 +378,22 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
       .get(req.body.nonce, walletAddress.toLowerCase()) as { message: string; expires_at: number } | undefined;
     if (!challenge || challenge.expires_at <= now()) return res.status(400).json({ error: "Wallet proof expired or already used" });
     let verified = false;
+    const signature = req.body.signature as Hex;
     try {
-      verified = await verifyMessage({ address: walletAddress, message: challenge.message, signature: req.body.signature as Hex });
+      verified = await verifyEoaMessage({ address: walletAddress, message: challenge.message, signature });
     } catch {
-      verified = false;
+      // Contract-wallet signatures are not recoverable as EOA signatures.
+    }
+    if (!verified && config.chainEligibility?.verifyWalletSignature) {
+      try {
+        verified = await config.chainEligibility.verifyWalletSignature({
+          address: walletAddress,
+          message: challenge.message,
+          signature,
+        });
+      } catch {
+        verified = false;
+      }
     }
     if (!verified) return res.status(401).json({ error: "Invalid wallet signature" });
 
@@ -627,6 +640,9 @@ export function createDustGenesisChainEligibility(contractAddress: Address, rpcU
     async chainTimestamp() {
       const block = await client.getBlock();
       return block.timestamp;
+    },
+    async verifyWalletSignature({ address, message, signature }) {
+      return client.verifyMessage({ address, message, signature });
     },
   };
 }

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { once } from "node:events";
 import express from "express";
 import Database from "better-sqlite3";
-import { recoverTypedDataAddress, type Address, type Hex } from "viem";
+import { encodeAbiParameters, encodePacked, hashMessage, isHex, parseSignature, recoverTypedDataAddress, verifyMessage as verifyEoaMessage, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { getCoinbaseInjectedProvider, isCoinbaseMobileWalletContext, selectEmbeddedWalletConnector } from "../src/walletConnection.js";
 import { DUST_GENESIS_CAMPAIGN_DURATION_SECONDS, DUST_GENESIS_PROFILE_URL, createDustGenesisRouter, initializeDustGenesisTables } from "../server/dustGenesis.js";
@@ -15,6 +15,7 @@ const signer = privateKeyToAccount(SIGNER_KEY);
 const walletA = privateKeyToAccount(WALLET_A_KEY);
 const walletB = privateKeyToAccount(WALLET_B_KEY);
 const CONTRACT = "0x1111111111111111111111111111111111111111" as Address;
+const SMART_WALLET = "0x3333333333333333333333333333333333333333" as Address;
 const testUrls = {
   announcement: "https://x.com/PLACEHOLDER_TEST_ANNOUNCEMENT_DO_NOT_USE",
   announcementMarkdown: "[Campaign announcement](https://x.com/PLACEHOLDER_TEST_ANNOUNCEMENT_DO_NOT_USE)",
@@ -140,6 +141,12 @@ let mockedChainId = 8453;
 let mockedAuthorizedSigner: Address = signer.address;
 let mockedCampaignStartTimestamp = 1_799_000_000n;
 let mockedCampaignDeadline = mockedCampaignStartTimestamp + BigInt(DUST_GENESIS_CAMPAIGN_DURATION_SECONDS);
+let contractWalletVerifierCalls = 0;
+let lastContractWalletVerifierInput: { address: Address; message: string; signature: Hex } | null = null;
+let contractWalletVerifierUnavailable = false;
+const contractWalletVerifierAnswers = new Map<string, boolean>();
+const contractWalletVerifierKey = (address: Address, message: string, signature: Hex) =>
+  `${address.toLowerCase()}\n${message}\n${signature.toLowerCase()}`;
 const app = express();
 app.use(express.json());
 app.use("/api/dust-genesis", createDustGenesisRouter(db, {
@@ -155,6 +162,12 @@ app.use("/api/dust-genesis", createDustGenesisRouter(db, {
     campaignStartTimestamp: async () => mockedCampaignStartTimestamp,
     campaignDeadline: async () => mockedCampaignDeadline,
     chainTimestamp: async () => BigInt(Math.floor(now / 1000)),
+    verifyWalletSignature: async ({ address, message, signature }) => {
+      contractWalletVerifierCalls += 1;
+      lastContractWalletVerifierInput = { address, message, signature };
+      if (contractWalletVerifierUnavailable) throw new Error("Mock Base RPC unavailable");
+      return contractWalletVerifierAnswers.get(contractWalletVerifierKey(address, message, signature)) ?? false;
+    },
   },
 }));
 app.use("/api/dust-genesis-anonymous", createDustGenesisRouter(anonymousDb, {
@@ -364,11 +377,17 @@ try {
 
   assert.equal((await post("/tasks/profile/start", {})).status, 401, "task progress requires wallet proof");
   const foreignChallenge = await post("/auth/nonce", { walletAddress: walletA.address });
+  const foreignSignature = await walletB.signMessage({ message: foreignChallenge.data.message });
+  assert.equal(await verifyEoaMessage({ address: walletA.address, message: foreignChallenge.data.message, signature: foreignSignature }), false,
+    "the wrong EOA proof is a valid signature that recovers to a different address");
+  const verifierCallsBeforeWrongEoa = contractWalletVerifierCalls;
   assert.equal((await post("/auth/verify", {
     walletAddress: walletA.address,
     nonce: foreignChallenge.data.nonce,
-    signature: await walletB.signMessage({ message: foreignChallenge.data.message }),
+    signature: foreignSignature,
   })).status, 401, "a different wallet cannot prove ownership");
+  assert.equal(contractWalletVerifierCalls, verifierCallsBeforeWrongEoa + 1,
+    "a false EOA recovery proceeds to the chain verifier and remains rejected when it says false");
   const authA = await authenticateAt(api, walletA);
   const replayedWalletProof = await post("/auth/verify", {
     walletAddress: walletA.address,
@@ -384,6 +403,97 @@ try {
     post("/auth/verify", { walletAddress: walletA.address, nonce: concurrentChallenge.data.nonce, signature: concurrentSignature }),
   ]);
   assert.deepEqual(concurrentProofs.map((result) => result.status).sort(), [200, 400], "concurrent wallet-proof replay is accepted at most once");
+
+  const createCoinbaseSmartWalletSignature = async (message: string): Promise<Hex> => {
+    const ownerSignature = parseSignature(await walletA.signTypedData({
+      domain: { name: "Coinbase Smart Wallet", version: "1", chainId: 8453, verifyingContract: SMART_WALLET },
+      types: { CoinbaseSmartWalletMessage: [{ name: "hash", type: "bytes32" }] },
+      primaryType: "CoinbaseSmartWalletMessage",
+      message: { hash: hashMessage(message) },
+    }));
+    const wrappedOwnerSignature = encodePacked(
+      ["bytes32", "bytes32", "uint8"],
+      [ownerSignature.r, ownerSignature.s, ownerSignature.yParity === 0 ? 27 : 28],
+    );
+    return encodeAbiParameters(
+      [{ name: "signature", type: "tuple", components: [
+        { name: "ownerIndex", type: "uint8" },
+        { name: "signatureData", type: "bytes" },
+      ] }],
+      [{ ownerIndex: 0, signatureData: wrappedOwnerSignature }],
+    );
+  };
+
+  const smartWalletChallenge = await post("/auth/nonce", { walletAddress: SMART_WALLET });
+  assert.equal(smartWalletChallenge.status, 200);
+  const smartWalletSignature = await createCoinbaseSmartWalletSignature(smartWalletChallenge.data.message);
+  assert.equal(isHex(smartWalletSignature, { strict: true }), true,
+    "the Coinbase-style ABI-wrapped signature is valid hexadecimal input");
+  assert.equal(await verifyEoaMessage({ address: SMART_WALLET, message: smartWalletChallenge.data.message, signature: smartWalletSignature }).catch(() => false), false,
+    "the Coinbase Smart Wallet signature is not accepted as an EOA proof");
+  contractWalletVerifierAnswers.set(contractWalletVerifierKey(SMART_WALLET, smartWalletChallenge.data.message, smartWalletSignature), true);
+  const verifierCallsBefore = contractWalletVerifierCalls;
+  const smartWalletProof = await post("/auth/verify", {
+    walletAddress: SMART_WALLET,
+    nonce: smartWalletChallenge.data.nonce,
+    signature: smartWalletSignature,
+  });
+  assert.equal(smartWalletProof.data.error, undefined, "contract-wallet verification returned a response without an error");
+  assert.equal(contractWalletVerifierCalls, verifierCallsBefore + 1,
+    "non-EOA signatures are checked through the configured chain verifier after EOA recovery fails");
+  assert.deepEqual(lastContractWalletVerifierInput, {
+    address: SMART_WALLET,
+    message: smartWalletChallenge.data.message,
+    signature: smartWalletSignature,
+  }, "the chain verifier receives the original wallet address, challenge text, and signature unchanged");
+  assert.equal(smartWalletProof.status, 200,
+    "a signature accepted by the mocked Base contract-wallet verifier can establish the wallet session");
+
+  const rejectedSmartWalletChallenge = await post("/auth/nonce", { walletAddress: SMART_WALLET });
+  const rejectedSmartWalletSignature = await createCoinbaseSmartWalletSignature(rejectedSmartWalletChallenge.data.message);
+  contractWalletVerifierAnswers.set(contractWalletVerifierKey(SMART_WALLET, rejectedSmartWalletChallenge.data.message, rejectedSmartWalletSignature), false);
+  const verifierCallsBeforeRejectedSmartWallet = contractWalletVerifierCalls;
+  assert.equal((await post("/auth/verify", {
+    walletAddress: SMART_WALLET,
+    nonce: rejectedSmartWalletChallenge.data.nonce,
+    signature: rejectedSmartWalletSignature,
+  })).status, 401, "a validly formed contract-wallet proof rejected by the chain verifier remains unauthorized");
+  assert.equal(contractWalletVerifierCalls, verifierCallsBeforeRejectedSmartWallet + 1,
+    "the rejected smart-wallet proof reached the chain verifier");
+
+  const thrownEoaChallenge = await post("/auth/nonce", { walletAddress: SMART_WALLET });
+  const malformedEoaSignature = "0x12" as Hex;
+  await assert.rejects(verifyEoaMessage({ address: SMART_WALLET, message: thrownEoaChallenge.data.message, signature: malformedEoaSignature }),
+    "the malformed proof exercises the thrown EOA-recovery path");
+  contractWalletVerifierAnswers.set(contractWalletVerifierKey(SMART_WALLET, thrownEoaChallenge.data.message, malformedEoaSignature), false);
+  const verifierCallsBeforeThrownEoa = contractWalletVerifierCalls;
+  assert.equal((await post("/auth/verify", {
+    walletAddress: SMART_WALLET,
+    nonce: thrownEoaChallenge.data.nonce,
+    signature: malformedEoaSignature,
+  })).status, 401, "a thrown EOA parse is rejected when the chain verifier does not validate it");
+  assert.equal(contractWalletVerifierCalls, verifierCallsBeforeThrownEoa + 1,
+    "the thrown EOA verification path invoked the chain verifier");
+
+  const unavailableRpcChallenge = await post("/auth/nonce", { walletAddress: SMART_WALLET });
+  contractWalletVerifierUnavailable = true;
+  try {
+    assert.equal((await post("/auth/verify", {
+      walletAddress: SMART_WALLET,
+      nonce: unavailableRpcChallenge.data.nonce,
+      signature: malformedEoaSignature,
+    })).status, 401, "a chain-verifier/RPC exception fails closed");
+  } finally {
+    contractWalletVerifierUnavailable = false;
+  }
+
+  const unavailableVerifierChallenge = await postTo(api.replace("/api/dust-genesis", "/api/dust-genesis-unconfigured"), "/auth/nonce", { walletAddress: SMART_WALLET });
+  assert.equal(unavailableVerifierChallenge.status, 200);
+  assert.equal((await postTo(api.replace("/api/dust-genesis", "/api/dust-genesis-unconfigured"), "/auth/verify", {
+    walletAddress: SMART_WALLET,
+    nonce: unavailableVerifierChallenge.data.nonce,
+    signature: malformedEoaSignature,
+  })).status, 401, "missing chain verification support fails closed for an unrecognized smart-wallet proof");
 
   const malformedStart = await post("/tasks/profile/start", { clientTimestamp: now }, authA.token);
   assert.equal(malformedStart.status, 400, "client timestamps are rejected");
