@@ -314,7 +314,7 @@ export function createDustGenesisRouter(db: Database.Database, config: DustGenes
         chainTimestamp: Number(chainTimestamp),
         tasks: [
           { id: "profile", label: "Follow the official Dust Engine X profile", url: profileUrl },
-          { id: "announcement", label: "Open the official campaign announcement post", url: announcementUrl },
+          { id: "announcement", label: "Like and retweet the post", url: announcementUrl },
         ],
       });
     } catch {

@@ -1104,7 +1104,7 @@ function DustGenesisCampaign() {
       <nav className="flex w-full max-w-md flex-col items-center gap-4 text-center">
         {(campaign?.tasks ?? [
           { id: "profile" as const, label: "Follow the official Dust Engine X profile", url: "https://x.com/dustengineapp" },
-          { id: "announcement" as const, label: "Open the official campaign announcement post", url: null },
+          { id: "announcement" as const, label: "Like and retweet the post", url: null },
         ]).map((task) => (
           (() => {
             const locked = task.id === "announcement" && !progress.profileComplete;
